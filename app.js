@@ -23,14 +23,14 @@ const MUTATING = ['add', 'cancel', 'setField', 'payDebt', 'stayAdmit', 'stayOp']
 /* Маҳаллий база: сайт шу билан ишлайди, сервер билан орқа фонда тенглашади.
    lists — бугунги қабуллар (бўлим бўйича), stays — ҳозир ётганлар,
    done — кетганлар, debts — қарзлар (иккаласи биринчи очилганда юкланади). */
-const DB = { date: '', ver: '', lists: {}, stays: [], done: null, debts: null };
+const DB = { date: '', ver: '', lists: {}, stays: [], done: null, debts: null, debtsVer: '' };
 const C = {};           // бошқа саналар рўйхати ва ҳисоботлар кеши
 let pending = 0;        // жорий сўровлар
 let W = 0;              // навбатдаги ёзишлар
 let Q = Promise.resolve();
 let started = false, wantSync = false, tmpN = 0;
 const S = { pin: null, user: null, cfg: null, dept: null, list: [], listDept: null,
-  paidTouched: false, stayMode: 'active', stays: [], stayId: null, view: 'qabul', report: null };
+  paidTouched: false, stayMode: 'active', stays: [], stayId: null, stayObj: null, view: 'qabul', report: null };
 
 const pad = n => String(n).padStart(2, '0');
 const isoDate = d => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
@@ -52,12 +52,15 @@ function apiUrl() { return DEFAULT_API_URL || store.get('apiUrl') || ''; }
 
 /* ---------- Сервер билан алоқа ---------- */
 async function callOnce(url, body) {
+  const ctl = new AbortController();
+  const tm = setTimeout(() => ctl.abort(), 40000);
   let res;
   try {
-    res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: body });
+    res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: body, signal: ctl.signal });
   } catch (e) {
-    const err = new Error('Интернет ёки сервер билан алоқа йўқ'); err.retry = true; throw err;
-  }
+    const err = new Error(e && e.name === 'AbortError' ? 'Сервер 40 сониядан бери жавоб бермаяпти' : 'Интернет ёки сервер билан алоқа йўқ');
+    err.retry = true; throw err;
+  } finally { clearTimeout(tm); }
   const raw = await res.text();
   let j;
   try { j = JSON.parse(raw); } catch (e) {
@@ -96,7 +99,13 @@ async function api(action, payload) {
 // Ёзишлар навбат билан, бирма-бир юборилади.
 function write(action, payload) {
   W++;
-  const run = () => api(action, payload);
+  const run = async () => {
+    const sent = DB.ver;
+    const j = await api(action, Object.assign({ ver: sent }, payload));
+    // Сервер «орада бошқа ҳеч ким ёзмаган» деса — янги версияни оламиз, тўлиқ янгилаш керак бўлмайди
+    if (j && j.fresh && j.ver && DB.ver === sent) { DB.ver = j.ver; persist(); }
+    return j;
+  };
   const p = Q.then(run, run);
   Q = p.catch(() => {});
   const fin = () => { W--; if (!W && wantSync) { wantSync = false; sync(true); } };
@@ -105,7 +114,7 @@ function write(action, payload) {
 }
 
 function persist() {
-  sess.set('db', JSON.stringify({ date: DB.date, ver: DB.ver, lists: DB.lists, stays: DB.stays }));
+  sess.set('db', JSON.stringify({ date: DB.date, ver: DB.ver, lists: DB.lists, stays: DB.stays, debts: DB.debts, debtsVer: DB.debtsVer || '' }));
 }
 
 function dropReports() { Object.keys(C).forEach(k => { if (k.indexOf('report:') === 0) delete C[k]; }); }
@@ -126,14 +135,15 @@ async function sync(force) {
   try {
     const j = await api('sync', force ? {} : { ver: DB.ver, date: DB.date });
     if (W) { wantSync = true; return; }   // шу орада ёзиш бошланди — кейин қайта оламиз
-    const before = S.stayId ? JSON.stringify(findStay(S.stayId)) : '';
+    const before = S.stayObj ? JSON.stringify(S.stayObj) : '';
+    const wasActive = !!S.stayId && DB.stays.some(x => x['ID'] === S.stayId);
     if (!applySync(j)) return;
     dropReports();
     refreshView();
     if (S.stayId) {
       const s = findStay(S.stayId);
-      if (!s) closeSheet();
-      else if (JSON.stringify(s) !== before) refreshStay();
+      if (s) { if (JSON.stringify(s) !== before) { S.stayObj = s; refreshStay(); } }
+      else if (wasActive) closeSheet();   // бошқа компьютерда чиқарилган ёки бекор қилинган
     }
   } catch (e) {
     if (force) toast(e.message, true);
@@ -190,6 +200,7 @@ function closeSheet() {
   $('#sheet').innerHTML = '';
   document.body.classList.remove('locked');
   S.stayId = null;
+  S.stayObj = null;
 }
 $('#overlay').addEventListener('mousedown', e => { if (e.target.id === 'overlay') closeSheet(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#overlay').classList.contains('hidden')) closeSheet(); });
@@ -214,7 +225,7 @@ function initLogin() {
     try { boot = JSON.parse(sess.get('boot') || 'null'); db = JSON.parse(sess.get('db') || 'null'); } catch (e) {}
     if (boot && boot.pin === saved && boot.user && boot.cfg) {
       S.user = boot.user; S.cfg = boot.cfg;
-      if (db && db.date === today()) Object.assign(DB, db);
+      if (db && db.date === today()) { Object.assign(DB, db); if (!Array.isArray(DB.debts)) { DB.debts = null; DB.debtsVer = ''; } }
       if (enter()) { login(true, true); return; }
     }
     login(true);
@@ -237,7 +248,7 @@ async function login(silent, background) {
   $('#loginErr').textContent = '';
   try {
     // Битта сўров: фойдаланувчи + созлама + бугунги маълумотлар
-    const j = await api('login', { sync: true });
+    const j = await api('login', { sync: true, ver: DB.ver, date: DB.date });
     if (!j.user || !j.config || !Array.isArray(j.config.depts) || !j.data) {
       throw new Error('Сервер жавоби тўлиқ эмас. Apps Script’га янги Code.gs (v4) қўйилиб, «New version» қилиб deploy қилинганини текширинг.');
     }
@@ -300,9 +311,9 @@ function applyConfig() {
     .map(d => `<button type="button" class="dept${d.key === active ? ' active' : ''}" data-key="${d.key}">${esc(d.name)}</button>`).join('') +
     `<button type="button" class="dept alt" data-go="yotoq">${YOTOQ_NAME} →</button>`;
 
-  const cur = $('#lDept').value;
+  const cur = $('#lDept').value || store.get('lDept') || '';
   $('#lDept').innerHTML = out.map(d => `<option value="${d.key}">${esc(d.name)}</option>`).join('');
-  if (cur) $('#lDept').value = cur;
+  if (cur && out.some(d => d.key === cur)) $('#lDept').value = cur;
   $('#docList').innerHTML = uniq(S.cfg.doctors.map(d => d.name)).map(n => `<option value="${esc(n)}">`).join('');
   if (!$('#qPay').children.length) $('#qPay').innerHTML = segHtml(S.cfg.payments);
 }
@@ -496,11 +507,18 @@ function bindForm() {
       const r = j.record;
       toast('Сақланди. Навбат № ' + r['Навбат №']);
       printVisit(r, S.dept.name);
-      if (r['Сана'] === DB.date) { (DB.lists[key] = DB.lists[key] || []).unshift(r); persist(); }
+      if (r['Сана'] === DB.date) (DB.lists[key] = DB.lists[key] || []).unshift(r);
+      if (r['Қарз'] > 0 && DB.debts) {
+        DB.debts.unshift({ dept: key, deptName: S.dept.name, id: r['ID'], row: r._row, no: r['Навбат №'], date: r['Сана'],
+          fio: r['Ф.И.Ш'], year: r['Туғилган йил'], phone: r['Телефон'], items: r['Хизматлар'],
+          sum: Number(r['Сумма']) || 0, paid: Number(r['Тўланган']) || 0, debt: Number(r['Қарз']) || 0 });
+        DB.debtsVer = '';
+      }
+      persist();
       delete C['list:' + key + ':' + r['Сана']];
       dropReports();
+      refreshView();
       openForm(key);
-      if (r['Қарз'] > 0) loadDebts(true);
     } catch (err) {
       toast(err.message, true);
     } finally {
@@ -513,7 +531,7 @@ function bindForm() {
 /* ================= РЎЙХАТ ================= */
 function bindList() {
   $('#lLoad').onclick = () => { if (($('#lDate').value || today()) === DB.date) sync(true); else loadList(true); };
-  $('#lDept').onchange = () => loadList();
+  $('#lDept').onchange = () => { store.set('lDept', $('#lDept').value); loadList(); };
   $('#lDate').onchange = () => loadList();
 
   $('#lTable').addEventListener('click', e => {
@@ -530,7 +548,7 @@ function bindList() {
       if (reason === null) return;
       // Экранда дарҳол ўзгаради, серверга орқа фонда ёзилади
       r['Ҳолат'] = 'Бекор'; r['Қарз'] = 0;
-      if (DB.debts) DB.debts = DB.debts.filter(x => x.id !== r['ID']);
+      if (DB.debts) { DB.debts = DB.debts.filter(x => x.id !== r['ID']); DB.debtsVer = ''; }
       persist(); dropReports(); renderList(d, S.list); refreshView();
       write('cancel', { dept: d.key, id: r['ID'], row: r._row, reason: reason })
         .then(() => toast('Бекор қилинди'), err => { toast('Сақланмади: ' + err.message, true); sync(true); });
@@ -651,6 +669,7 @@ function putStay(st) {
   if (st['Ҳолат'] === 'Бекор') return;
   if (stayActive(st)) DB.stays.push(st);
   else if (DB.done) DB.done.unshift(st);
+  if (S.stayId === id) S.stayObj = st;
 }
 
 function bindYotoq() {
@@ -767,13 +786,16 @@ function svcOptions() {
 
 
 function openStay(id) {
-  if (!findStay(id)) return;
+  const s = findStay(id);
+  if (!s) return;
   S.stayId = id;
+  S.stayObj = s;
   openSheet('', 'drawer');
   renderStay();
 }
 
-const cur = () => (S.stayId ? findStay(S.stayId) : null);
+// Очиқ турган бемор (рўйхатдан йўқолса ҳам — масалан, ҳозиргина чиқарилган бўлса — панел ишлайверади)
+const cur = () => S.stayObj || null;
 
 function stayTopHtml(v) {
   const s = v.stay, c = v.calc, act = c.active, bal = c.balance;
@@ -924,7 +946,7 @@ function stayOp(s, op, data) {
   s._pend = (s._pend || 0) + 1;
   refreshYotoq();
   return write('stayOp', { id: s['ID'], row: s._row, op: op, data: data }).then(j => {
-    const now = findStay(s['ID']) || s;
+    const now = (S.stayObj && S.stayObj['ID'] === s['ID']) ? S.stayObj : (findStay(s['ID']) || s);
     now._pend = Math.max(0, (now._pend || 1) - 1);
     if (!now._pend) putStay(j.stay);      // навбатда бошқа амал бўлмаса — сервер ҳолати билан алмаштирамиз
     persist(); dropReports(); refreshYotoq();
@@ -1097,7 +1119,6 @@ async function onSheetSubmit(e) {
       putStay(j.stay); persist(); dropReports();
       toast('Бемор чиқарилди');
       refreshYotoq();
-      if (!DB.done) DB.done = [j.stay];
       renderStay();
       if (left > 0) loadDebts(true);
       printStay(viewOf(j.stay));
@@ -1118,10 +1139,14 @@ function bindQarz() {
 async function loadDebts(quiet) {
   if (DB.debts) renderDebts();
   else if (!quiet) { $('#dTable').innerHTML = empty('Юкланмоқда…'); $('#dStats').innerHTML = ''; }
+  // Маълумот версияси ўзгармаган бўлса — сервердан қайта сўрамаймиз
+  if (DB.debts && DB.debtsVer && DB.debtsVer === DB.ver) return;
   try {
     const j = await api('debts');
     if (W && DB.debts) return;         // ёзиш кетяпти — эски рўйхат билан алмаштирмаймиз
     DB.debts = j.rows;
+    DB.debtsVer = j.ver || '';
+    persist();
     renderDebts();
   } catch (e) {
     if (quiet) return;
@@ -1189,6 +1214,7 @@ function submitDebt(f) {
   if (today_) { today_['Тўланган'] = paidOf(today_) + amount; today_['Қарз'] = Math.max(0, (Number(today_['Қарз']) || 0) - amount); }
   const st = r.dept === YOTOQ ? findStay(r.id) : null;
   if (st) st.py.push([today(), nowTime(), amount, payment, 'Қарз тўлови']);
+  DB.debtsVer = '';
   Object.keys(C).forEach(k => delete C[k]);
   persist();
   closeSheet();
@@ -1197,7 +1223,7 @@ function submitDebt(f) {
   printPay({ title: 'ҚАРЗ ТЎЛОВИ', dept: r.deptName, fio: r.fio, amount: amount, payment: payment,
     note: left > 0 ? 'Қолган қарз: ' + money(left) + ' сўм' : 'Қарз тўлиқ ёпилди' });
   write('payDebt', { dept: r.dept, id: r.id, row: r.row, amount: amount, payment: payment })
-    .catch(err => { toast('Сақланмади: ' + err.message, true); DB.debts = null; loadDebts(); sync(true); });
+    .catch(err => { toast('Сақланмади: ' + err.message, true); DB.debts = null; DB.debtsVer = ''; loadDebts(); sync(true); });
 }
 
 /* ================= ҲИСОБОТ ================= */

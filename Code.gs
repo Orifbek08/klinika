@@ -7,7 +7,7 @@
  *  2) Deploy → Manage deployments → ✏ → Version: New version → Deploy
  *     (Execute as: Me, Who has access: Anyone). Ҳавола ўзгармайди.
  *
- *  ТЕКШИРИШ: ҳаволани браузерда очинг — {"ok":true,...,"v":"4"} чиқади.
+ *  ТЕКШИРИШ: ҳаволани браузерда очинг — {"ok":true,...,"v":"5"} чиқади.
  *
  *  v4 — ТЕЗЛИК
  *   • Сайт битта сўров билан бугунги ҳамма маълумотни олади («sync»)
@@ -18,7 +18,7 @@
  ******************************************************/
 
 const TZ = 'Asia/Tashkent';
-const SCHEMA = '4';
+const SCHEMA = '5';
 const YOTOQ = 'yotoq';
 const S_YOT = 'Ётоқхона';
 const S_PAY = 'Тўловлар';
@@ -269,7 +269,13 @@ function ver_() {
 }
 
 function bump_() {
-  try { cache_().put('ver', String(Date.now()), 21600); } catch (e) {}
+  const c = cache_();
+  let old = null;
+  try { old = c && c.get('ver'); } catch (e) {}
+  let v = String(Date.now());
+  if (v === old) v = String(Date.now() + 1);
+  try { if (c) c.put('ver', v, 21600); } catch (e) {}
+  return v;
 }
 
 // 100 КБ дан катта матнни бўлакларга бўлиб кешлаш
@@ -298,6 +304,16 @@ function bigGet_(k) {
   } catch (e) { return null; }
 }
 
+// Натижани маълумот версияси (tag) билан кешлайди: ўзгариш бўлмаса қайта ҳисобламайди.
+function memo_(key, tag, fn) {
+  const hit = bigGet_(key);
+  if (hit) { try { const o = JSON.parse(hit); if (o.tag === tag) return o; } catch (e) {} }
+  const res = fn();
+  res.tag = tag;
+  bigPut_(key, JSON.stringify(res), 600);
+  return res;
+}
+
 /* ================= API ================= */
 
 function doGet() {
@@ -316,15 +332,21 @@ function doPost(e) {
 
     const mut = MUTATING.indexOf(req.action) >= 0;
     const c = cache_();
+    let before = null;
     if (mut) {
       // Бир хил сўров икки марта келса (қайта уриниш) — иккинчи марта ёзилмайди
       if (req.rid && c) { const done = c.get('rid:' + req.rid); if (done) return out_(done); }
       lock = LockService.getScriptLock();
       lock.waitLock(25000);
       if (req.rid && c) { const done2 = c.get('rid:' + req.rid); if (done2) return out_(done2); }
+      before = ver_();
     }
     const res = Object.assign({ ok: true }, route_(req, user));
-    if (mut) { bump_(); res.ver = ver_(); }
+    if (mut) {
+      res.ver = bump_();
+      // fresh — сайтдаги маълумот янги: бошқа ҳеч ким орада ёзмаган, тўлиқ янгилаш шарт эмас
+      res.fresh = !!req.ver && req.ver === before;
+    }
     const text = JSON.stringify(res);
     if (mut && req.rid && c) { try { c.put('rid:' + req.rid, text, 600); } catch (x) {} }
     return out_(text);
@@ -337,7 +359,7 @@ function doPost(e) {
 
 function route_(req, user) {
   switch (req.action) {
-    case 'login':     return Object.assign({ user: user, config: config_() }, req.sync ? { data: sync_({}) } : {});
+    case 'login':     return Object.assign({ user: user, config: config_() }, req.sync ? { data: sync_(req) } : {});
     case 'sync':      return sync_(req);
     case 'list':      return { rows: list_(req.dept, req.date) };
     case 'add':       return { record: add_(req.dept, req.data || {}, user) };
@@ -391,12 +413,21 @@ function headRaw_(sh) {
 
 // Варақ + устун номлари (устун номлари кешда туради)
 const HC_ = {};
-function T_(name) {
+function T_(name, write) {
   const sh = sh_(name);
   let h = HC_[name];
   if (!h) {
     h = cached_('h:' + name, 600, () => headRaw_(sh));
     HC_[name] = h;
+  }
+  // Ёзишдан олдин: устун қўшилган/ўчирилган бўлса, сарлавҳа қайта ўқилади (нотўғри устунга ёзмаслик учун)
+  if (write && !HC_['ok:' + name]) {
+    if (sh.getLastColumn() !== h.length) {
+      h = headRaw_(sh);
+      HC_[name] = h;
+      try { cache_().put('h:' + name, JSON.stringify(h), 600); } catch (e) {}
+    }
+    HC_['ok:' + name] = true;
   }
   return { sh: sh, head: h };
 }
@@ -453,12 +484,14 @@ function tail_(name, keep, stop) {
 // Қаторни топади: аввал сайт айтган қатор рақами текширилади (1 та ўқиш),
 // тўғри келмаса — ID бўйича қидирилади.
 function locate_(name, id, hint) {
-  const t = T_(name);
+  const t = T_(name, true);
   const n = t.head.length;
   hint = Number(hint) || 0;
   if (hint >= 2) {
-    const v = t.sh.getRange(hint, 1, 1, n).getValues()[0];
-    if (String(v[0]) === String(id)) return { sh: t.sh, head: t.head, r: hint, v: v };
+    try {
+      const v = t.sh.getRange(hint, 1, 1, n).getValues()[0];
+      if (String(v[0]) === String(id)) return { sh: t.sh, head: t.head, r: hint, v: v };
+    } catch (e) {}
   }
   const last = t.sh.getLastRow();
   if (last < 2) return null;
@@ -557,7 +590,7 @@ function nextNo_(d, date) {
 function addPay_(deptName, recId, fio, amount, payType, kind, user, now) {
   amount = int_(amount);
   if (!(amount > 0)) return null;
-  const t = T_(S_PAY);
+  const t = T_(S_PAY, true);
   const rec = {
     'ID': 'p-' + stamp_(now) + '-' + rnd_(),
     'Сана': fmt_(now, 'yyyy-MM-dd'),
@@ -576,7 +609,7 @@ function addPay_(deptName, recId, fio, amount, payType, kind, user, now) {
 }
 
 function cancelPays_(recId) {
-  const t = T_(S_PAY);
+  const t = T_(S_PAY, true);
   const c = t.head.indexOf('Ёзув ID');
   const n = t.sh.getLastRow() - 1;
   if (c < 0 || n < 1) return;
@@ -592,24 +625,29 @@ function sync_(req) {
   const date = today_();
   const ver = ver_();
   if (req.ver && req.ver === ver && req.date === date) return { same: true, ver: ver, date: date };
-
-  const hit = bigGet_('sync_');
-  if (hit) {
-    try {
-      const o = JSON.parse(hit);
-      if (o.ver === ver && o.date === date) return o;
-    } catch (e) {}
-  }
-
-  const lists = {};
-  DEPTS.forEach(d => {
-    if (d.key === YOTOQ) return;
-    lists[d.key] = tail_(d.name, o => o['Сана'] === date, o => !!o['Сана'] && String(o['Сана']) < date);
+  return memo_('sync_', ver + '|' + date, () => {
+    const lists = {};
+    DEPTS.forEach(d => {
+      if (d.key === YOTOQ) return;
+      lists[d.key] = tail_(d.name, o => o['Сана'] === date, o => !!o['Сана'] && String(o['Сана']) < date);
+    });
+    return { ver: ver, date: date, lists: lists, stays: activeStays_() };
   });
-  const stays = readAll_(S_YOT).rows.filter(stayActive_).map(stayOut_);
-  const res = { ver: ver, date: date, lists: lists, stays: stays };
-  bigPut_('sync_', JSON.stringify(res), 600);
-  return res;
+}
+
+// Ҳозир ётганлар: аввал фақат «Ҳолат» устуни ўқилади, кейин керакли қаторлар.
+function activeStays_() {
+  const t = T_(S_YOT);
+  const c = t.head.indexOf('Ҳолат');
+  const n = t.sh.getLastRow() - 1;
+  if (c < 0 || n < 1) return [];
+  const col = t.sh.getRange(2, c + 1, n, 1).getValues();
+  const hits = [];
+  for (let i = 0; i < col.length; i++) {
+    const v = String(col[i][0]);
+    if (v === 'Ётибди' || v === 'Фаол') hits.push(i + 2);
+  }
+  return pick_(t.sh, t.head, hits).filter(stayActive_).map(stayOut_);
 }
 
 /* ================= АМБУЛАТОР ҚАБУЛ ================= */
@@ -653,10 +691,12 @@ function add_(key, data, user) {
   };
   d.extra.forEach(f => { rec[f.h] = (data.extra || {})[f.h] || ''; });
 
-  const t = T_(d.name);
-  t.sh.appendRow(rowOf_(t.head, rec));
+  const t = T_(d.name, true);
+  const r = t.sh.getLastRow() + 1;
+  t.sh.getRange(r, 1, 1, t.head.length).setValues([rowOf_(t.head, rec)]);
   addPay_(d.name, rec['ID'], fio, paid, data.payment, 'Қабул', user, now);
 
+  rec._row = r;
   rec.items = items;
   rec.dept = d.name;
   return rec;
@@ -697,6 +737,11 @@ function setField_(key, id, hint, field, value) {
 /* ================= ҚАРЗЛАР ================= */
 
 function debts_() {
+  const ver = ver_();
+  return memo_('debts_', ver, () => debtsRead_(ver));
+}
+
+function debtsRead_(ver) {
   const out = [];
   let total = 0;
   DEPTS.forEach(d => {
@@ -724,7 +769,7 @@ function debts_() {
     });
   });
   out.sort((a, b) => String(b.date).localeCompare(String(a.date)));
-  return { rows: out, total: total };
+  return { rows: out, total: total, ver: ver };
 }
 
 function payDebt_(key, id, hint, amount, payType, user) {
@@ -812,7 +857,7 @@ function stayAdmit_(data, user) {
   rec[JC] = '[]';
   rec[JP] = JSON.stringify(py);
 
-  const t = T_(d.name);
+  const t = T_(d.name, true);
   const r = t.sh.getLastRow() + 1;
   t.sh.getRange(r, 1, 1, t.head.length).setValues([rowOf_(t.head, rec)]);
   addPay_(d.name, id, fio, prepay, data.payment, 'Аванс', user, now);
@@ -837,7 +882,7 @@ function stayOp_(req, user) {
     case 'charge': {
       const items = (d.items || []).filter(i => i && String(i.name || '').trim());
       if (!items.length) throw new Error('Хизмат танланмаган');
-      const t = T_(S_CHG);
+      const t = T_(S_CHG, true);
       const logs = [];
       items.forEach((i, k) => {
         const qty = Math.max(1, int_(i.qty) || 1), price = Math.max(0, int_(i.price));
@@ -907,6 +952,10 @@ function report_(from, to) {
   const today = today_();
   from = from || today;
   to = to || from;
+  return memo_('rep_' + from + '_' + to, ver_(), () => reportRead_(from, to, today));
+}
+
+function reportRead_(from, to, today) {
   const inR = d => !!d && String(d) >= from && String(d) <= to;
   const res = {
     from: from, to: to,
