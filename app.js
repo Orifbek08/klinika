@@ -57,7 +57,14 @@ async function api(action, payload) {
       throw new Error('Интернет ёки API билан алоқа йўқ');
     }
     let j;
-    try { j = await res.json(); } catch (e) { throw new Error('Сервер жавоби нотўғри (Apps Script «Anyone» қилиб deploy қилинганми?)'); }
+    const raw = await res.text();
+    try { j = JSON.parse(raw); } catch (e) {
+      // Google хато саҳифасини қайтарди — ундаги матнни кўрсатамиз
+      const el = document.createElement('div');
+      el.innerHTML = raw.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ');
+      const txt = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+      throw new Error('Apps Script хатоси: ' + (txt || 'бўш жавоб (HTTP ' + res.status + ')'));
+    }
     if (!j.ok) throw new Error(j.error || 'Хатолик');
     return j;
   } finally {
