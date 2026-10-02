@@ -18,10 +18,19 @@ const sess = safe(() => sessionStorage);
 
 const YOTOQ = 'yotoq';
 const YOTOQ_NAME = 'Ётоқхона';
-const C = {}; // кеш: эски маълумот дарҳол кўрсатилади, янгиси орқа фонда келади
-let pending = 0, started = false;
+const MUTATING = ['add', 'cancel', 'setField', 'payDebt', 'stayAdmit', 'stayOp'];
+
+/* Маҳаллий база: сайт шу билан ишлайди, сервер билан орқа фонда тенглашади.
+   lists — бугунги қабуллар (бўлим бўйича), stays — ҳозир ётганлар,
+   done — кетганлар, debts — қарзлар (иккаласи биринчи очилганда юкланади). */
+const DB = { date: '', ver: '', lists: {}, stays: [], done: null, debts: null };
+const C = {};           // бошқа саналар рўйхати ва ҳисоботлар кеши
+let pending = 0;        // жорий сўровлар
+let W = 0;              // навбатдаги ёзишлар
+let Q = Promise.resolve();
+let started = false, wantSync = false, tmpN = 0;
 const S = { pin: null, user: null, cfg: null, dept: null, list: [], listDept: null,
-  paidTouched: false, stayMode: 'active', stays: [], stay: null, debts: [], report: null };
+  paidTouched: false, stayMode: 'active', stays: [], stayId: null, view: 'qabul', report: null };
 
 const pad = n => String(n).padStart(2, '0');
 const isoDate = d => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
@@ -32,6 +41,7 @@ const money = n => { const v = Math.round(Number(n) || 0); return (v < 0 ? '−'
 const num = v => Number(String(v == null ? '' : v).replace(/[^\d]/g, '')) || 0;
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uniq = a => Array.from(new Set(a));
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 const daysBetween = (a, b) => {
   const pa = String(a || '').split('-').map(Number), pb = String(b || '').split('-').map(Number);
   if (pa.length !== 3 || pb.length !== 3 || !pa[0] || !pb[0]) return 1;
@@ -40,36 +50,93 @@ const daysBetween = (a, b) => {
 
 function apiUrl() { return DEFAULT_API_URL || store.get('apiUrl') || ''; }
 
+/* ---------- Сервер билан алоқа ---------- */
+async function callOnce(url, body) {
+  let res;
+  try {
+    res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: body });
+  } catch (e) {
+    const err = new Error('Интернет ёки сервер билан алоқа йўқ'); err.retry = true; throw err;
+  }
+  const raw = await res.text();
+  let j;
+  try { j = JSON.parse(raw); } catch (e) {
+    // Google хато саҳифасини қайтарди — ундаги матнни кўрсатамиз
+    const el = document.createElement('div');
+    el.innerHTML = raw.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ');
+    const txt = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+    const err = new Error('Apps Script хатоси: ' + (txt || 'бўш жавоб (HTTP ' + res.status + ')')); err.retry = true; throw err;
+  }
+  if (!j.ok) throw new Error(j.error || 'Хатолик');
+  return j;
+}
+
 async function api(action, payload) {
   const url = apiUrl();
   if (!url) throw new Error('API манзили киритилмаган');
+  const req = Object.assign({ action: action, pin: S.pin }, payload || {});
+  // rid — қайта уринишда сервер иккинчи марта ёзмаслиги учун
+  if (MUTATING.indexOf(action) >= 0) req.rid = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  const body = JSON.stringify(req);
   pending++;
   document.body.classList.add('syncing');
   try {
-    let res;
-    try {
-      res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(Object.assign({ action: action, pin: S.pin }, payload || {}))
-      });
-    } catch (e) {
-      throw new Error('Интернет ёки API билан алоқа йўқ');
+    try { return await callOnce(url, body); }
+    catch (e) {
+      if (!e.retry) throw e;
+      await sleep(900);
+      return await callOnce(url, body);
     }
-    let j;
-    const raw = await res.text();
-    try { j = JSON.parse(raw); } catch (e) {
-      // Google хато саҳифасини қайтарди — ундаги матнни кўрсатамиз
-      const el = document.createElement('div');
-      el.innerHTML = raw.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ');
-      const txt = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 300);
-      throw new Error('Apps Script хатоси: ' + (txt || 'бўш жавоб (HTTP ' + res.status + ')'));
-    }
-    if (!j.ok) throw new Error(j.error || 'Хатолик');
-    return j;
   } finally {
     pending--;
     if (pending <= 0) { pending = 0; document.body.classList.remove('syncing'); }
+  }
+}
+
+// Ёзишлар навбат билан, бирма-бир юборилади.
+function write(action, payload) {
+  W++;
+  const run = () => api(action, payload);
+  const p = Q.then(run, run);
+  Q = p.catch(() => {});
+  const fin = () => { W--; if (!W && wantSync) { wantSync = false; sync(true); } };
+  p.then(fin, fin);
+  return p;
+}
+
+function persist() {
+  sess.set('db', JSON.stringify({ date: DB.date, ver: DB.ver, lists: DB.lists, stays: DB.stays }));
+}
+
+function dropReports() { Object.keys(C).forEach(k => { if (k.indexOf('report:') === 0) delete C[k]; }); }
+
+function applySync(d) {
+  if (!d || d.same) return false;
+  DB.date = d.date; DB.ver = d.ver;
+  DB.lists = d.lists || {};
+  DB.stays = d.stays || [];
+  persist();
+  return true;
+}
+
+// Сервердан янги ҳолатни олади (ўзгариш бўлмаса — жуда енгил жавоб).
+async function sync(force) {
+  if (!S.pin) return;
+  if (W) { if (force) wantSync = true; return; }
+  try {
+    const j = await api('sync', force ? {} : { ver: DB.ver, date: DB.date });
+    if (W) { wantSync = true; return; }   // шу орада ёзиш бошланди — кейин қайта оламиз
+    const before = S.stayId ? JSON.stringify(findStay(S.stayId)) : '';
+    if (!applySync(j)) return;
+    dropReports();
+    refreshView();
+    if (S.stayId) {
+      const s = findStay(S.stayId);
+      if (!s) closeSheet();
+      else if (JSON.stringify(s) !== before) refreshStay();
+    }
+  } catch (e) {
+    if (force) toast(e.message, true);
   }
 }
 
@@ -78,7 +145,7 @@ function toast(msg, bad) {
   t.textContent = msg;
   t.className = 'show' + (bad ? ' bad' : '');
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => { t.className = ''; }, 3500);
+  toast._t = setTimeout(() => { t.className = ''; }, bad ? 6000 : 3000);
 }
 
 function busy(btn, on) {
@@ -122,7 +189,7 @@ function closeSheet() {
   $('#overlay').classList.add('hidden');
   $('#sheet').innerHTML = '';
   document.body.classList.remove('locked');
-  S.stay = null;
+  S.stayId = null;
 }
 $('#overlay').addEventListener('mousedown', e => { if (e.target.id === 'overlay') closeSheet(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#overlay').classList.contains('hidden')) closeSheet(); });
@@ -142,11 +209,12 @@ function initLogin() {
   const saved = sess.get('pin');
   if (saved && apiUrl()) {
     S.pin = saved;
-    // Саҳифа янгиланганда сақланган созлама билан дарҳол очилади, сервердан орқа фонда текширилади
-    let boot = null;
-    try { boot = JSON.parse(sess.get('boot') || 'null'); } catch (e) {}
+    // Саҳифа янгиланганда сақланган маълумот билан дарҳол очилади, сервердан орқа фонда текширилади
+    let boot = null, db = null;
+    try { boot = JSON.parse(sess.get('boot') || 'null'); db = JSON.parse(sess.get('db') || 'null'); } catch (e) {}
     if (boot && boot.pin === saved && boot.user && boot.cfg) {
       S.user = boot.user; S.cfg = boot.cfg;
+      if (db && db.date === today()) Object.assign(DB, db);
       if (enter()) { login(true, true); return; }
     }
     login(true);
@@ -168,18 +236,22 @@ async function login(silent, background) {
   if (!background) busy(b, true);
   $('#loginErr').textContent = '';
   try {
-    const j = await api('login');
-    if (!j.user || !j.config || !Array.isArray(j.config.depts)) {
-      throw new Error('Сервер жавоби тўлиқ эмас. Apps Script’га янги Code.gs қўйилиб, «New version» қилиб deploy қилинганини текширинг.');
+    // Битта сўров: фойдаланувчи + созлама + бугунги маълумотлар
+    const j = await api('login', { sync: true });
+    if (!j.user || !j.config || !Array.isArray(j.config.depts) || !j.data) {
+      throw new Error('Сервер жавоби тўлиқ эмас. Apps Script’га янги Code.gs (v4) қўйилиб, «New version» қилиб deploy қилинганини текширинг.');
     }
     S.user = j.user;
     S.cfg = j.config;
     sess.set('pin', S.pin);
     sess.set('boot', JSON.stringify({ pin: S.pin, user: S.user, cfg: S.cfg }));
-    if (background) applyConfig(); else enter();
+    if (!W) applySync(j.data);
+    if (background) { applyConfig(); refreshView(); } else enter();
+    loadDebts(true);
   } catch (e) {
     if (background) {
-      if (/PIN/.test(e.message)) { sess.del('pin'); sess.del('boot'); location.reload(); }
+      if (/PIN/.test(e.message)) { sess.del('pin'); sess.del('boot'); sess.del('db'); location.reload(); }
+      else toast(e.message, true);
       return;
     }
     sess.del('pin'); sess.del('boot');
@@ -202,6 +274,7 @@ function enter() {
     if (!started) { startApp(); started = true; }
     $('#login').classList.add('hidden');
     $('#app').classList.remove('hidden');
+    refreshView();
     return true;
   } catch (e) {
     console.error(e);
@@ -234,7 +307,7 @@ function applyConfig() {
   if (!$('#qPay').children.length) $('#qPay').innerHTML = segHtml(S.cfg.payments);
 }
 
-// Бир марта: тугмаларни боғлаш ва биринчи маълумотларни орқа фонда юклаш
+// Бир марта: тугмаларни боғлаш
 function startApp() {
   $('#deptGrid').addEventListener('click', e => {
     const b = e.target.closest('.dept');
@@ -243,7 +316,7 @@ function startApp() {
   });
   $('#lDate').value = today();
   $$('.nav').forEach(t => { t.onclick = () => showView(t.dataset.view); });
-  $('#logout').onclick = () => { sess.del('pin'); sess.del('boot'); location.reload(); };
+  $('#logout').onclick = () => { sess.del('pin'); sess.del('boot'); sess.del('db'); location.reload(); };
 
   bindForm();
   bindList();
@@ -252,18 +325,30 @@ function startApp() {
   bindReport();
   setRange('today');
   showView('qabul');
-  loadStays('active', true);
-  loadDebts(true);
+
+  // Бошқа компьютерда киритилган ёзувлар ҳам кўриниши учун орқа фонда тенглашиб туради
+  setInterval(() => { if (!document.hidden) sync(); }, 45000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
 }
 
 function showView(v) {
+  S.view = v;
   $$('.view').forEach(s => s.classList.toggle('hidden', s.id !== 'v-' + v));
   $$('.nav').forEach(t => t.classList.toggle('on', t.dataset.view === v));
   window.scrollTo(0, 0);
-  if (v === 'royxat') loadList();
-  if (v === 'yotoq') loadStays();
-  if (v === 'qarz') loadDebts();
+  refreshView();
+  if (v === 'qarz') loadDebts(DB.debts !== null);
   if (v === 'hisobot') loadReport();
+}
+
+// Жорий бўлимни маҳаллий базадан қайта чизади (серверга мурожаатсиз).
+function refreshView() {
+  if (!started) return;
+  setPill('#nYotoq', DB.stays.length);
+  if (DB.debts) setPill('#nQarz', DB.debts.length);
+  if (S.view === 'royxat') loadList();
+  if (S.view === 'yotoq') loadStays();
+  if (S.view === 'qarz' && DB.debts) renderDebts();
 }
 
 function setPill(sel, n) {
@@ -285,6 +370,7 @@ function svcRow(name, price, custom) {
   </div>`;
 }
 
+
 function collectItems() {
   return $$('#svcBox .svc').filter(r => $('.s-on', r).checked).map(r => {
     const n = $('.s-name', r);
@@ -296,12 +382,14 @@ function collectItems() {
   });
 }
 
+
 function calcSum() {
   const f = $('#qForm');
   $$('#svcBox .svc').forEach(r => r.classList.toggle('on', $('.s-on', r).checked));
   f.sum.value = money(collectItems().reduce((s, i) => s + i.price * i.qty, 0));
   syncPaid();
 }
+
 
 function syncPaid() {
   const f = $('#qForm');
@@ -313,6 +401,7 @@ function syncPaid() {
   dl.classList.toggle('hidden', !(debt > 0));
   $('b', dl).textContent = money(debt) + ' сўм';
 }
+
 
 function openForm(key) {
   S.dept = deptBy(key);
@@ -346,6 +435,7 @@ function openForm(key) {
   f.scrollIntoView({ behavior: 'smooth', block: 'start' });
   setTimeout(() => f.fio.focus(), 250);
 }
+
 
 function bindForm() {
   const f = $('#qForm');
@@ -401,13 +491,16 @@ function bindForm() {
     const btn = f.querySelector('[type=submit]');
     busy(btn, true);
     try {
-      const j = await api('add', { dept: S.dept.key, data: data });
-      toast('Сақланди. Навбат № ' + j.record['Навбат №']);
-      printVisit(j.record, S.dept.name);
-      const ck = 'list:' + S.dept.key + ':' + j.record['Сана'];
-      if (C[ck]) C[ck].unshift(j.record);
-      openForm(S.dept.key);
-      if (j.record['Қарз'] > 0) loadDebts(true);
+      const key = S.dept.key;
+      const j = await write('add', { dept: key, data: data });
+      const r = j.record;
+      toast('Сақланди. Навбат № ' + r['Навбат №']);
+      printVisit(r, S.dept.name);
+      if (r['Сана'] === DB.date) { (DB.lists[key] = DB.lists[key] || []).unshift(r); persist(); }
+      delete C['list:' + key + ':' + r['Сана']];
+      dropReports();
+      openForm(key);
+      if (r['Қарз'] > 0) loadDebts(true);
     } catch (err) {
       toast(err.message, true);
     } finally {
@@ -416,13 +509,14 @@ function bindForm() {
   });
 }
 
+
 /* ================= РЎЙХАТ ================= */
 function bindList() {
-  $('#lLoad').onclick = loadList;
-  $('#lDept').onchange = loadList;
-  $('#lDate').onchange = loadList;
+  $('#lLoad').onclick = () => { if (($('#lDate').value || today()) === DB.date) sync(true); else loadList(true); };
+  $('#lDept').onchange = () => loadList();
+  $('#lDate').onchange = () => loadList();
 
-  $('#lTable').addEventListener('click', async e => {
+  $('#lTable').addEventListener('click', e => {
     const b = e.target.closest('button[data-act]');
     if (!b) return;
     const r = S.list.find(x => String(x['ID']) === b.dataset.id);
@@ -434,35 +528,46 @@ function bindList() {
     if (b.dataset.act === 'cancel') {
       const reason = prompt('Бекор қилиш сабаби (' + r['Ф.И.Ш'] + '):');
       if (reason === null) return;
-      busy(b, true);
-      try { await api('cancel', { dept: d.key, id: r['ID'], reason: reason }); toast('Бекор қилинди'); r['Ҳолат'] = 'Бекор'; r['Қарз'] = 0; renderList(d, S.list); loadList(); loadDebts(true); }
-      catch (err) { toast(err.message, true); busy(b, false); }
+      // Экранда дарҳол ўзгаради, серверга орқа фонда ёзилади
+      r['Ҳолат'] = 'Бекор'; r['Қарз'] = 0;
+      if (DB.debts) DB.debts = DB.debts.filter(x => x.id !== r['ID']);
+      persist(); dropReports(); renderList(d, S.list); refreshView();
+      write('cancel', { dept: d.key, id: r['ID'], row: r._row, reason: reason })
+        .then(() => toast('Бекор қилинди'), err => { toast('Сақланмади: ' + err.message, true); sync(true); });
     }
 
     if (b.dataset.act === 'close') {
       const field = b.dataset.field;
       if (!confirm(r['Ф.И.Ш'] + ' — ' + field + ': ' + showDate(today()) + '?')) return;
-      busy(b, true);
-      try { await api('setField', { dept: d.key, id: r['ID'], field: field, value: today() }); toast('Сақланди'); r[field] = today(); renderList(d, S.list); }
-      catch (err) { toast(err.message, true); busy(b, false); }
+      r[field] = today();
+      persist(); renderList(d, S.list);
+      write('setField', { dept: d.key, id: r['ID'], row: r._row, field: field, value: today() })
+        .then(() => toast('Сақланди'), err => { toast('Сақланмади: ' + err.message, true); sync(true); });
     }
   });
 }
 
-async function loadList() {
+// Бугунги рўйхат маҳаллий базадан дарҳол чиқади; бошқа сана — сервердан (кеш билан).
+async function loadList(force) {
   const key = $('#lDept').value;
+  if (!key) return;
   const d = deptBy(key);
   const date = $('#lDate').value || today();
+  if (date === DB.date) {
+    S.list = DB.lists[key] || (DB.lists[key] = []);
+    S.listDept = d; S.listKey = '';
+    renderList(d, S.list);
+    return;
+  }
   const ck = 'list:' + key + ':' + date;
   S.listKey = ck;
-  if (C[ck]) { S.list = C[ck]; S.listDept = d; renderList(d, C[ck]); }
+  if (C[ck]) { S.list = C[ck]; S.listDept = d; renderList(d, C[ck]); if (!force) return; }
   else { $('#lStats').innerHTML = ''; $('#lTable').innerHTML = empty('Юкланмоқда…'); }
   try {
     const j = await api('list', { dept: key, date: date });
     C[ck] = j.rows;
     if (S.listKey !== ck) return;
-    S.list = j.rows;
-    S.listDept = d;
+    S.list = j.rows; S.listDept = d;
     renderList(d, j.rows);
   } catch (e) {
     if (S.listKey !== ck) return;
@@ -515,10 +620,42 @@ function renderList(d, rows) {
   $('#lTable').innerHTML = head + body;
 }
 
+
 /* ================= ЁТОҚХОНА ================= */
+const stayActive = s => s['Ҳолат'] !== 'Бекор' && s['Ҳолат'] !== 'Кетди' && !s['Кетган сана'];
+
+// Ҳисоб: кунлар × кунлик нарх + муолажалар − тўланган (leave — кетиш санаси бўйича ҳисоблаш учун)
+function calcOf(s, leave) {
+  const days = daysBetween(s['Келган сана'] || s['Сана'], leave || s['Кетган сана'] || today());
+  const rate = Number(s['Кунлик нарх']) || 0;
+  const svc = (s.ch || []).reduce((a, c) => a + (Number(c[6]) || 0), 0);
+  const paid = (s.py || []).reduce((a, p) => a + (Number(p[2]) || 0), 0);
+  const bed = days * rate, total = bed + svc;
+  return { active: stayActive(s), days: days, rate: rate, bed: bed, svc: svc, total: total, paid: paid, balance: total - paid };
+}
+
+const viewOf = (s, leave) => ({
+  stay: s, calc: calcOf(s, leave),
+  charges: (s.ch || []).map(c => ({ 'ID': c[0], 'Сана': c[1], 'Бўлим': c[2], 'Хизмат': c[3], 'Сони': c[4], 'Нарх': c[5], 'Сумма': c[6] })),
+  payments: (s.py || []).map(p => ({ 'Сана': p[0], 'Вақт': p[1], 'Сумма': p[2], 'Тўлов тури': p[3], 'Тури': p[4] }))
+});
+
+function findStay(id) {
+  return DB.stays.find(x => x['ID'] === id) || (DB.done || []).find(x => x['ID'] === id) || null;
+}
+
+function putStay(st) {
+  const id = st['ID'];
+  DB.stays = DB.stays.filter(x => x['ID'] !== id);
+  if (DB.done) DB.done = DB.done.filter(x => x['ID'] !== id);
+  if (st['Ҳолат'] === 'Бекор') return;
+  if (stayActive(st)) DB.stays.push(st);
+  else if (DB.done) DB.done.unshift(st);
+}
+
 function bindYotoq() {
   $('#yMode').addEventListener('seg', e => { S.stayMode = e.detail; loadStays(); });
-  $('#yLoad').onclick = () => loadStays();
+  $('#yLoad').onclick = () => { if (S.stayMode === 'active') sync(true); else loadDone(true); };
   $('#yAdmit').onclick = openAdmit;
   $('#yGrid').addEventListener('click', e => {
     const c = e.target.closest('[data-stay]');
@@ -530,41 +667,27 @@ function bindYotoq() {
   $('#sheet').addEventListener('change', onSheetInput);
 }
 
-// quiet = фақат орқа фонда янгилаш (экранни «Юкланмоқда»га ўтказмайди)
-async function loadStays(mode, quiet) {
-  mode = mode || S.stayMode;
-  const ck = 'stays:' + mode;
-  const shown = () => mode === S.stayMode;
-  if (shown()) {
-    if (C[ck]) renderStays(C[ck], mode);
-    else if (!quiet) { $('#yGrid').innerHTML = '<p class="muted pad">Юкланмоқда…</p>'; $('#yStats').innerHTML = ''; }
-  }
-  try {
-    const j = await api('stays', { mode: mode });
-    C[ck] = j.rows;
-    if (shown()) renderStays(j.rows, mode);
-    else if (mode === 'active') setPill('#nYotoq', j.rows.length);
-  } catch (e) {
-    if (shown() && !C[ck] && !quiet) $('#yGrid').innerHTML = `<p class="err pad">${esc(e.message)}</p>`;
-    else if (!quiet) toast(e.message, true);
+function loadStays() {
+  if (S.stayMode === 'active') {
+    const rows = DB.stays.slice().sort((a, b) => String(a['Келган сана']).localeCompare(String(b['Келган сана'])));
+    renderStays(rows.map(s => viewOf(s)), 'active');
+  } else if (DB.done) {
+    renderStays(DB.done.map(s => viewOf(s)), 'done');
+  } else {
+    $('#yStats').innerHTML = ''; $('#yGrid').innerHTML = '<p class="muted pad">Юкланмоқда…</p>';
+    loadDone();
   }
 }
 
-// Сервер жавобидаги беморни кешга қўйиб, рўйхатни дарҳол янгилайди
-function patchStay(v) {
-  const id = v.stay['ID'];
-  const lite = { stay: v.stay, calc: v.calc };
-  const gone = v.stay['Ҳолат'] === 'Бекор';
-  ['active', 'done'].forEach(m => {
-    const ck = 'stays:' + m;
-    if (!C[ck]) return;
-    C[ck] = C[ck].filter(x => x.stay['ID'] !== id);
-    if (!gone && (m === 'active') === !!v.calc.active) {
-      if (m === 'active') C[ck].push(lite); else C[ck].unshift(lite);
-    }
-  });
-  if (C['stays:' + S.stayMode]) renderStays(C['stays:' + S.stayMode], S.stayMode);
-  else if (C['stays:active']) setPill('#nYotoq', C['stays:active'].length);
+async function loadDone(loud) {
+  try {
+    const j = await api('staysDone');
+    DB.done = j.rows;
+    if (S.view === 'yotoq' && S.stayMode === 'done') loadStays();
+  } catch (e) {
+    if (DB.done || loud) toast(e.message, true);
+    else if (S.stayMode === 'done') $('#yGrid').innerHTML = `<p class="err pad">${esc(e.message)}</p>`;
+  }
 }
 
 function renderStays(rows, mode) {
@@ -603,6 +726,7 @@ function renderStays(rows, mode) {
   }).join('');
 }
 
+
 function openAdmit() {
   const rooms = S.cfg.services.filter(s => s.dept === YOTOQ_NAME);
   openSheet(`
@@ -631,22 +755,6 @@ function openAdmit() {
   $('#admitForm').fio.focus();
 }
 
-async function openStay(id) {
-  // Рўйхатдаги маълумот дарҳол кўрсатилади, муолажа ва тўловлар орқа фонда келади
-  const lite = (S.stays || []).find(x => x.stay['ID'] === id);
-  openSheet('<p class="muted pad">Юкланмоқда…</p>', 'drawer');
-  if (lite) renderStay({ stay: lite.stay, calc: lite.calc, charges: [], payments: [], loading: true });
-  try {
-    const j = await api('stay', { id: id });
-    if ($('#overlay').classList.contains('hidden') || (S.stay && S.stay.stay['ID'] !== id)) return;
-    if (!S.stay || S.stay.loading) {
-      const open = $('#sheet .panel:not(.hidden)');
-      renderStay(j.detail, open ? open.dataset.panel : null);
-    }
-  } catch (e) {
-    if (!lite) $('#sheet').innerHTML = `<p class="err pad">${esc(e.message)}</p>`; else toast(e.message, true);
-  }
-}
 
 function svcOptions() {
   const by = {};
@@ -657,43 +765,30 @@ function svcOptions() {
       '</optgroup>').join('') + '<option value="custom">Бошқа хизмат…</option>';
 }
 
-function renderStay(v, keep) {
-  S.stay = v;
-  const s = v.stay, c = v.calc, act = c.active;
-  const bal = c.balance;
+
+function openStay(id) {
+  if (!findStay(id)) return;
+  S.stayId = id;
+  openSheet('', 'drawer');
+  renderStay();
+}
+
+const cur = () => (S.stayId ? findStay(S.stayId) : null);
+
+function stayTopHtml(v) {
+  const s = v.stay, c = v.calc, act = c.active, bal = c.balance;
   const balRow = bal > 0
     ? `<div class="tot due"><span>${act ? 'Тўланмаган қолдиқ' : 'Қарз'}</span><b>${money(bal)}</b></div>`
     : bal < 0 ? `<div class="tot ok"><span>Ортиқча тўланган</span><b>${money(-bal)}</b></div>`
     : '<div class="tot ok"><span>Қолдиқ</span><b>0</b></div>';
-
-  // Муолажалар кунлар бўйича
-  const byDay = {};
-  v.charges.forEach(x => { (byDay[x['Сана']] = byDay[x['Сана']] || []).push(x); });
-  const days = Object.keys(byDay).sort().reverse();
-  const chargesHtml = days.length ? days.map(d => {
-    const sub = byDay[d].reduce((a, x) => a + (Number(x['Сумма']) || 0), 0);
-    return `<div class="day"><div class="day-head"><b>${showDate(d)}</b><span>${money(sub)}</span></div>` +
-      byDay[d].map(x => `<div class="line">
-        <span class="nm">${esc(x['Хизмат'])}${Number(x['Сони']) > 1 ? ' ×' + esc(x['Сони']) : ''}<small>${esc(x['Бўлим'] || '')}</small></span>
-        <span class="am">${money(x['Сумма'])}</span>
-        ${act ? `<button type="button" class="x" title="Олиб ташлаш" data-act="chargeDel" data-id="${esc(x['ID'])}">×</button>` : '<span></span>'}
-      </div>`).join('') + '</div>';
-  }).join('') : `<p class="muted note">${v.loading ? 'Юкланмоқда…' : 'Ҳали муолажа киритилмаган.'}</p>`;
-
-  const paysHtml = v.payments.length ? v.payments.map(p => `<div class="line">
-      <span class="nm">${showDate(p['Сана'])} ${esc(p['Вақт'])}<small>${esc(p['Тури'])} · ${esc(p['Тўлов тури'])}</small></span>
-      <span class="am">${money(p['Сумма'])}</span><span></span></div>`).join('')
-    : `<p class="muted note">${v.loading ? 'Юкланмоқда…' : 'Тўлов қилинмаган.'}</p>`;
-
-  $('#sheet').innerHTML = `
+  return `
     <div class="sheet-head">
       <div><span class="qno">№ ${esc(s['Навбат №'])}</span>
         <h3>${esc(s['Ф.И.Ш'])}</h3>
         <p class="muted">${[s['Туғилган йил'] ? s['Туғилган йил'] + ' й.' : '', s['Телефон']].filter(Boolean).map(esc).join(' · ') || '&nbsp;'}</p></div>
-      <div class="head-r"><span class="badge ${act ? '' : 'off'}">${act ? 'Ётибди' : 'Кетди'}</span>
+      <div class="head-r">${s._pend ? '<span class="saving">сақланмоқда…</span>' : ''}<span class="badge ${act ? '' : 'off'}">${act ? 'Ётибди' : 'Кетди'}</span>
         <button type="button" class="x" data-act="close">×</button></div>
     </div>
-
     <div class="facts">
       <div><span>Хона / ётоқ</span><b>${esc(s['Ётоқ тури'] || '—')}</b></div>
       <div><span>Кунлик нарх</span><b>${money(c.rate)}</b></div>
@@ -702,15 +797,49 @@ function renderStay(v, keep) {
       <div><span>Доктор</span><b>${esc(s['Доктор'] || '—')}</b></div>
       <div><span>Юборган</span><b>${esc(s['Юборган доктор'] || '—')}</b></div>
     </div>
-
     <div class="totals">
       <div class="tot"><span>Ётоқ: ${c.days} кун × ${money(c.rate)}</span><b>${money(c.bed)}</b></div>
       <div class="tot"><span>Муолажалар</span><b>${money(c.svc)}</b></div>
       <div class="tot sum"><span>Жами</span><b>${money(c.total)}</b></div>
       <div class="tot"><span>Тўланган</span><b>${money(c.paid)}</b></div>
       ${balRow}
-    </div>
+    </div>`;
+}
 
+function stayChHtml(v) {
+  const act = v.calc.active;
+  const byDay = {};
+  v.charges.forEach(x => { (byDay[x['Сана']] = byDay[x['Сана']] || []).push(x); });
+  const days = Object.keys(byDay).sort().reverse();
+  if (!days.length) return '<p class="muted note">Ҳали муолажа киритилмаган.</p>';
+  return days.map(d => {
+    const sub = byDay[d].reduce((a, x) => a + (Number(x['Сумма']) || 0), 0);
+    return `<div class="day"><div class="day-head"><b>${showDate(d)}</b><span>${money(sub)}</span></div>` +
+      byDay[d].map(x => {
+        const tmp = String(x['ID']).indexOf('tmp') === 0;
+        return `<div class="line${tmp ? ' tmp' : ''}">
+        <span class="nm">${esc(x['Хизмат'])}${Number(x['Сони']) > 1 ? ' ×' + esc(x['Сони']) : ''}<small>${esc(x['Бўлим'] || '')}</small></span>
+        <span class="am">${money(x['Сумма'])}</span>
+        ${act && !tmp ? `<button type="button" class="x" title="Олиб ташлаш" data-act="chargeDel" data-id="${esc(x['ID'])}">×</button>` : '<span></span>'}
+      </div>`;
+      }).join('') + '</div>';
+  }).join('');
+}
+
+function stayPyHtml(v) {
+  if (!v.payments.length) return '<p class="muted note">Тўлов қилинмаган.</p>';
+  return v.payments.map(p => `<div class="line">
+      <span class="nm">${showDate(p['Сана'])} ${esc(p['Вақт'])}<small>${esc(p['Тури'])} · ${esc(p['Тўлов тури'])}</small></span>
+      <span class="am">${money(p['Сумма'])}</span><span></span></div>`).join('');
+}
+
+// Ён панелни тўлиқ чизади (формалар билан).
+function renderStay(keep) {
+  const s = cur();
+  if (!s) return;
+  const v = viewOf(s), c = v.calc, act = c.active, bal = c.balance;
+  $('#sheet').innerHTML = `
+    <div id="stTop">${stayTopHtml(v)}</div>
     <div class="bar">
       ${act ? `<button type="button" class="btn primary" data-act="panel" data-p="out">Чиқариш (кетди)</button>
                <button type="button" class="btn" data-act="panel" data-p="pay">Тўлов қабул қилиш</button>
@@ -764,13 +893,48 @@ function renderStay(v, keep) {
     </form>` : ''}
 
     <h4>Муолажалар</h4>
-    <div class="lines">${chargesHtml}</div>
+    <div class="lines" id="stCh">${stayChHtml(v)}</div>
     <h4>Тўловлар</h4>
-    <div class="lines">${paysHtml}</div>
+    <div class="lines" id="stPy">${stayPyHtml(v)}</div>
     ${s['Изоҳ'] ? `<p class="muted note">Изоҳ: ${esc(s['Изоҳ'])}</p>` : ''}`;
 
   if (keep) togglePanel(keep, true);
   updateOutCalc(true);
+}
+
+// Фақат рақамлар ва рўйхатларни янгилайди — формага ёзилаётган нарса ўчмайди.
+function refreshStay() {
+  const s = cur();
+  if (!s || !$('#stTop')) return;
+  const v = viewOf(s);
+  $('#stTop').innerHTML = stayTopHtml(v);
+  $('#stCh').innerHTML = stayChHtml(v);
+  $('#stPy').innerHTML = stayPyHtml(v);
+  updateOutCalc(false);
+}
+
+function refreshYotoq() {
+  setPill('#nYotoq', DB.stays.length);
+  if (S.view === 'yotoq') loadStays();
+  refreshStay();
+}
+
+// Ётган бемор устидаги амал: экранда дарҳол, серверга орқа фонда.
+function stayOp(s, op, data) {
+  s._pend = (s._pend || 0) + 1;
+  refreshYotoq();
+  return write('stayOp', { id: s['ID'], row: s._row, op: op, data: data }).then(j => {
+    const now = findStay(s['ID']) || s;
+    now._pend = Math.max(0, (now._pend || 1) - 1);
+    if (!now._pend) putStay(j.stay);      // навбатда бошқа амал бўлмаса — сервер ҳолати билан алмаштирамиз
+    persist(); dropReports(); refreshYotoq();
+    return j;
+  }, e => {
+    toast('Сақланмади: ' + e.message, true);
+    const now = findStay(s['ID']); if (now) now._pend = 0;
+    sync(true);
+    throw e;
+  });
 }
 
 function togglePanel(name, force) {
@@ -781,15 +945,15 @@ function togglePanel(name, force) {
   });
 }
 
+
 function updateOutCalc(reset) {
   const f = $('#sheet form[data-panel="out"]');
-  if (!f || !S.stay) return;
-  const s = S.stay.stay, c = S.stay.calc;
-  const days = daysBetween(s['Келган сана'], f.date.value || today());
-  const total = days * c.rate + c.svc;
-  const bal = total - c.paid;
+  const s = cur();
+  if (!f || !s) return;
+  const c = calcOf(s, f.date.value || today());
+  const bal = c.balance;
   $('[data-role=outCalc]', f).innerHTML =
-    `${days} кун · жами <b>${money(total)}</b> · тўланган ${money(c.paid)} · <b class="${bal > 0 ? 'neg' : 'pos'}">${bal >= 0 ? 'қолдиқ ' + money(bal) : 'ортиқча ' + money(-bal)}</b>`;
+    `${c.days} кун · жами <b>${money(c.total)}</b> · тўланган ${money(c.paid)} · <b class="${bal > 0 ? 'neg' : 'pos'}">${bal >= 0 ? 'қолдиқ ' + money(bal) : 'ортиқча ' + money(-bal)}</b>`;
   if (reset) f.amount.value = bal > 0 ? money(bal) : '';
   const left = bal - num(f.amount.value);
   const dl = $('[data-role=outDebt]', f);
@@ -815,36 +979,37 @@ function onSheetInput(e) {
   }
 }
 
-async function onSheetClick(e) {
+
+function onSheetClick(e) {
   const b = e.target.closest('[data-act]');
   if (!b) return;
   const act = b.dataset.act;
   if (act === 'close') return closeSheet();
   if (act === 'panel') return togglePanel(b.dataset.p);
-  if (!S.stay) return;
-  const id = S.stay.stay['ID'];
+  const s = cur();
+  if (!s) return;
 
-  if (act === 'statement') return printStay(S.stay);
+  if (act === 'statement') return printStay(viewOf(s));
 
   if (act === 'chargeDel') {
     if (!confirm('Бу муолажа ҳисобдан олиб ташлансинми?')) return;
-    busy(b, true);
-    try { const j = await api('stayChargeCancel', { chargeId: b.dataset.id }); renderStay(j.detail); patchStay(j.detail); }
-    catch (err) { toast(err.message, true); busy(b, false); }
+    s.ch = s.ch.filter(c => String(c[0]) !== b.dataset.id);
+    stayOp(s, 'chargeCancel', { cid: b.dataset.id }).catch(() => {});
   }
 
   if (act === 'stayCancel') {
     const reason = prompt('Ётоқ ёзувини бекор қилиш сабаби (тўловлари ҳам бекор бўлади):');
     if (reason === null) return;
-    busy(b, true);
-    try { await api('cancel', { dept: YOTOQ, id: id, reason: reason }); toast('Бекор қилинди'); const g = S.stay; g.stay['Ҳолат'] = 'Бекор'; patchStay(g); closeSheet(); loadDebts(true); }
-    catch (err) { toast(err.message, true); busy(b, false); }
+    DB.stays = DB.stays.filter(x => x !== s);
+    persist(); dropReports(); closeSheet(); refreshYotoq();
+    write('cancel', { dept: YOTOQ, id: s['ID'], row: s._row, reason: reason })
+      .then(() => toast('Бекор қилинди'), err => { toast('Сақланмади: ' + err.message, true); sync(true); });
   }
 
   if (act === 'debt') {
-    const st = S.stay;
+    const c = calcOf(s);
     closeSheet();
-    openDebtPay({ dept: YOTOQ, deptName: YOTOQ_NAME, id: id, fio: st.stay['Ф.И.Ш'], debt: st.calc.balance, sum: st.calc.total, paid: st.calc.paid });
+    openDebtPay({ dept: YOTOQ, deptName: YOTOQ_NAME, id: s['ID'], row: s._row, fio: s['Ф.И.Ш'], debt: c.balance, sum: c.total, paid: c.paid });
   }
 }
 
@@ -858,82 +1023,85 @@ async function onSheetSubmit(e) {
     busy(btn, true);
     try {
       const prepay = num(f.prepay.value), payment = segVal($('[data-role=pay]', f));
-      const j = await api('stayAdmit', { data: {
+      const j = await write('stayAdmit', { data: {
         fio: f.fio.value.trim(), year: f.year.value.trim(), phone: f.phone.value.trim(),
         room: f.room.value.trim(), rate: num(f.rate.value),
         arrive: f.arrive.value, arriveTime: f.arriveTime.value,
         doctor: f.doctor.value.trim(), referrer: f.referrer.value.trim(),
         prepay: prepay, payment: payment, note: f.note.value.trim() } });
-      toast('Бемор қабул қилинди. № ' + j.detail.stay['Навбат №']);
+      const st = j.stay;
+      toast('Бемор қабул қилинди. № ' + st['Навбат №']);
+      putStay(st); persist(); dropReports();
       S.stayMode = 'active';
       $$('#yMode button').forEach(x => x.classList.toggle('on', x.dataset.v === 'active'));
-      patchStay(j.detail);
-      if (!C['stays:active']) loadStays('active');
-      openSheet('', 'drawer');
-      renderStay(j.detail);
-      if (prepay > 0) printPay({ title: 'АВАНС ТЎЛОВИ', dept: YOTOQ_NAME, fio: j.detail.stay['Ф.И.Ш'], amount: prepay, payment: payment });
+      refreshYotoq();
+      openStay(st['ID']);
+      if (prepay > 0) printPay({ title: 'АВАНС ТЎЛОВИ', dept: YOTOQ_NAME, fio: st['Ф.И.Ш'], amount: prepay, payment: payment });
     } catch (err) { toast(err.message, true); busy(btn, false); }
     return;
   }
 
-  if (f.id === 'debtForm') return submitDebt(f, btn);
-  if (!S.stay) return;
-  const id = S.stay.stay['ID'];
+  if (f.id === 'debtForm') return submitDebt(f);
+  const s = cur();
+  if (!s) return;
   const kind = f.dataset.panel;
 
-  try {
-    if (kind === 'charge') {
-      const v = f.svc.value;
-      const sv = S.cfg.services[v];
-      const name = v === 'custom' ? f.custom.value.trim() : (sv ? sv.name : '');
-      if (!name) { toast('Хизматни танланг', true); return; }
-      busy(btn, true);
-      const j = await api('stayCharge', { id: id, date: f.date.value || today(),
-        items: [{ name: name, dept: sv ? sv.dept : '', qty: Math.max(1, parseInt(f.qty.value, 10) || 1), price: num(f.price.value) }] });
-      toast('Муолажа қўшилди');
-      const d = f.date.value;
-      renderStay(j.detail);
-      const nf = $('#sheet form[data-panel="charge"]');
-      if (nf && d) nf.date.value = d;
-      patchStay(j.detail);
-    }
-    if (kind === 'pay') {
-      const amount = num(f.amount.value), payment = segVal($('[data-role=pay]', f));
-      if (!(amount > 0)) { toast('Суммани киритинг', true); return; }
-      busy(btn, true);
-      const j = await api('stayPay', { id: id, amount: amount, payment: payment });
-      toast('Тўлов қабул қилинди');
-      renderStay(j.detail);
-      patchStay(j.detail);
-      printPay({ title: 'АВАНС ТЎЛОВИ', dept: YOTOQ_NAME, fio: j.detail.stay['Ф.И.Ш'], amount: amount, payment: payment,
-        note: 'Жорий ҳисоб: ' + money(j.detail.calc.total) + ' · тўланган: ' + money(j.detail.calc.paid) });
-    }
-    if (kind === 'edit') {
-      busy(btn, true);
-      const j = await api('stayEdit', { id: id, data: { room: f.room.value.trim(), rate: num(f.rate.value), arrive: f.arrive.value } });
-      toast('Сақланди');
-      renderStay(j.detail);
-      patchStay(j.detail);
-    }
-    if (kind === 'out') {
-      const amount = num(f.amount.value), payment = segVal($('[data-role=pay]', f));
-      const s = S.stay.stay, c = S.stay.calc;
-      const bal = daysBetween(s['Келган сана'], f.date.value || today()) * c.rate + c.svc - c.paid;
-      if (amount > Math.max(0, bal)) { toast('Сумма қолдиқдан катта', true); return; }
-      const left = bal - amount;
-      if (!confirm(s['Ф.И.Ш'] + ' чиқарилсинми?\nКетган сана: ' + showDate(f.date.value || today()) +
-          '\nҲозир тўлайди: ' + money(amount) + ' сўм' + (left > 0 ? '\nҚарзга қолади: ' + money(left) + ' сўм' : ''))) return;
-      busy(btn, true);
-      const j = await api('stayDischarge', { id: id, data: { date: f.date.value || today(), amount: amount, payment: payment } });
+  if (kind === 'charge') {
+    const v = f.svc.value;
+    const sv = S.cfg.services[v];
+    const name = v === 'custom' ? f.custom.value.trim() : (sv ? sv.name : '');
+    if (!name) { toast('Хизматни танланг', true); return; }
+    const date = f.date.value || today();
+    const qty = Math.max(1, parseInt(f.qty.value, 10) || 1), price = num(f.price.value), dept = sv ? sv.dept : '';
+    // Дарҳол рўйхатга қўшилади; форма кейинги муолажа учун тайёр
+    s.ch.push(['tmp' + (++tmpN), date, dept, name, qty, price, qty * price]);
+    f.svc.value = ''; f.custom.value = ''; f.custom.classList.add('hidden'); f.qty.value = 1; f.price.value = '';
+    stayOp(s, 'charge', { date: date, items: [{ name: name, dept: dept, qty: qty, price: price }] }).catch(() => {});
+    f.svc.focus();
+    return;
+  }
+
+  if (kind === 'pay') {
+    const amount = num(f.amount.value), payment = segVal($('[data-role=pay]', f));
+    if (!(amount > 0)) { toast('Суммани киритинг', true); return; }
+    s.py.push([today(), nowTime(), amount, payment, 'Аванс']);
+    togglePanel('pay', false); f.classList.add('hidden'); f.amount.value = '';
+    stayOp(s, 'pay', { amount: amount, payment: payment }).catch(() => {});
+    const c = calcOf(s);
+    printPay({ title: 'АВАНС ТЎЛОВИ', dept: YOTOQ_NAME, fio: s['Ф.И.Ш'], amount: amount, payment: payment,
+      note: 'Жорий ҳисоб: ' + money(c.total) + ' · тўланган: ' + money(c.paid) });
+    return;
+  }
+
+  if (kind === 'edit') {
+    const data = { room: f.room.value.trim(), rate: num(f.rate.value), arrive: f.arrive.value };
+    s['Ётоқ тури'] = data.room; s['Кунлик нарх'] = data.rate;
+    if (data.arrive) s['Келган сана'] = data.arrive;
+    f.classList.add('hidden');
+    stayOp(s, 'edit', data).then(() => toast('Сақланди'), () => {});
+    return;
+  }
+
+  if (kind === 'out') {
+    const amount = num(f.amount.value), payment = segVal($('[data-role=pay]', f));
+    const leave = f.date.value || today();
+    const bal = calcOf(s, leave).balance;
+    if (amount > Math.max(0, bal)) { toast('Сумма қолдиқдан катта', true); return; }
+    const left = bal - amount;
+    if (!confirm(s['Ф.И.Ш'] + ' чиқарилсинми?\nКетган сана: ' + showDate(leave) +
+        '\nҲозир тўлайди: ' + money(amount) + ' сўм' + (left > 0 ? '\nҚарзга қолади: ' + money(left) + ' сўм' : ''))) return;
+    busy(btn, true);
+    try {
+      // Чиқариш — муҳим амал: сервер тасдиғини кутамиз
+      const j = await write('stayOp', { id: s['ID'], row: s._row, op: 'discharge', data: { date: leave, amount: amount, payment: payment } });
+      putStay(j.stay); persist(); dropReports();
       toast('Бемор чиқарилди');
-      renderStay(j.detail);
-      patchStay(j.detail);
-      if (j.detail.calc.balance > 0) loadDebts(true);
-      printStay(j.detail);
-    }
-  } catch (err) {
-    toast(err.message, true);
-    busy(btn, false);
+      refreshYotoq();
+      if (!DB.done) DB.done = [j.stay];
+      renderStay();
+      if (left > 0) loadDebts(true);
+      printStay(viewOf(j.stay));
+    } catch (err) { toast(err.message, true); busy(btn, false); }
   }
 }
 
@@ -948,25 +1116,26 @@ function bindQarz() {
 }
 
 async function loadDebts(quiet) {
-  if (S.debtsLoaded) renderDebts();
+  if (DB.debts) renderDebts();
   else if (!quiet) { $('#dTable').innerHTML = empty('Юкланмоқда…'); $('#dStats').innerHTML = ''; }
   try {
     const j = await api('debts');
-    S.debts = j.rows;
-    S.debtsLoaded = true;
+    if (W && DB.debts) return;         // ёзиш кетяпти — эски рўйхат билан алмаштирмаймиз
+    DB.debts = j.rows;
     renderDebts();
   } catch (e) {
     if (quiet) return;
-    if (S.debtsLoaded) toast(e.message, true);
+    if (DB.debts) toast(e.message, true);
     else $('#dTable').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`;
   }
 }
 
 function renderDebts() {
+  const all = DB.debts || [];
+  setPill('#nQarz', all.length);
   const q = $('#dSearch').value.trim().toLowerCase();
-  const rows = S.debts.filter(r => !q || String(r.fio).toLowerCase().includes(q) || String(r.phone).toLowerCase().includes(q));
+  const rows = all.filter(r => !q || String(r.fio).toLowerCase().includes(q) || String(r.phone).toLowerCase().includes(q));
   S.debtView = rows;
-  setPill('#nQarz', S.debts.length);
   const total = rows.reduce((s, r) => s + r.debt, 0);
   const people = uniq(rows.map(r => String(r.fio).toLowerCase() + '|' + r.phone)).length;
   $('#dStats').innerHTML = stat('Жами қарз', money(total), total > 0 ? 'warn main' : 'main', 'сўм') +
@@ -1005,26 +1174,30 @@ function openDebtPay(r) {
   const i = $('#debtForm').amount; i.focus(); i.select();
 }
 
-async function submitDebt(f, btn) {
+
+function submitDebt(f) {
   const r = S.debtRow;
   const amount = num(f.amount.value), payment = segVal($('[data-role=pay]', f));
   if (!(amount > 0)) { toast('Суммани киритинг', true); return; }
   if (amount > r.debt) { toast('Сумма қарздан катта', true); return; }
-  busy(btn, true);
-  try {
-    const j = await api('payDebt', { dept: r.dept, id: r.id, amount: amount, payment: payment });
-    toast('Қарз тўлови қабул қилинди');
-    closeSheet();
-    // Жадвал дарҳол янгиланади, сервердан орқа фонда тасдиқланади
-    r.paid += amount; r.debt -= amount;
-    if (r.debt <= 0) S.debts = S.debts.filter(x => x !== r);
-    renderDebts();
-    Object.keys(C).forEach(k => { if (k.indexOf('list:') === 0 || k.indexOf('report:') === 0) delete C[k]; });
-    loadDebts(true);
-    if (r.dept === YOTOQ) loadStays('done', true);
-    printPay({ title: 'ҚАРЗ ТЎЛОВИ', dept: r.deptName, fio: r.fio, amount: amount, payment: payment,
-      note: j.payment.left > 0 ? 'Қолган қарз: ' + money(j.payment.left) + ' сўм' : 'Қарз тўлиқ ёпилди' });
-  } catch (err) { toast(err.message, true); busy(btn, false); }
+  // Экранда дарҳол, серверга орқа фонда
+  const row = (DB.debts || []).find(x => x.id === r.id) || r;
+  row.paid += amount; row.debt -= amount;
+  if (DB.debts && row.debt <= 0) DB.debts = DB.debts.filter(x => x !== row);
+  const left = row.debt;
+  const today_ = (DB.lists[r.dept] || []).find(x => x['ID'] === r.id);
+  if (today_) { today_['Тўланган'] = paidOf(today_) + amount; today_['Қарз'] = Math.max(0, (Number(today_['Қарз']) || 0) - amount); }
+  const st = r.dept === YOTOQ ? findStay(r.id) : null;
+  if (st) st.py.push([today(), nowTime(), amount, payment, 'Қарз тўлови']);
+  Object.keys(C).forEach(k => delete C[k]);
+  persist();
+  closeSheet();
+  renderDebts(); refreshView();
+  toast('Қарз тўлови қабул қилинди');
+  printPay({ title: 'ҚАРЗ ТЎЛОВИ', dept: r.deptName, fio: r.fio, amount: amount, payment: payment,
+    note: left > 0 ? 'Қолган қарз: ' + money(left) + ' сўм' : 'Қарз тўлиқ ёпилди' });
+  write('payDebt', { dept: r.dept, id: r.id, row: r.row, amount: amount, payment: payment })
+    .catch(err => { toast('Сақланмади: ' + err.message, true); DB.debts = null; loadDebts(); sync(true); });
 }
 
 /* ================= ҲИСОБОТ ================= */
@@ -1040,11 +1213,13 @@ function setRange(k) {
   $('#pTo').value = t;
 }
 
+
 function bindReport() {
   $('#pRange').addEventListener('seg', e => { setRange(e.detail); loadReport(); });
   $('#pLoad').onclick = () => { $$('#pRange button').forEach(b => b.classList.remove('on')); loadReport(); };
   $('#pPrint').onclick = () => { if (S.report) doPrint('report'); };
 }
+
 
 async function loadReport() {
   if (!S.user || S.user.role !== 'админ') return;
@@ -1066,6 +1241,7 @@ async function loadReport() {
   }
 }
 
+
 function bars(obj, sortKeys) {
   const keys = sortKeys ? Object.keys(obj).sort() : Object.keys(obj).sort((a, b) => obj[b] - obj[a]);
   if (!keys.length) return '<p class="muted note">Маълумот йўқ</p>';
@@ -1074,6 +1250,7 @@ function bars(obj, sortKeys) {
     <div class="track"><div class="fill" style="width:${(obj[k] / max * 100).toFixed(1)}%"></div></div>
     <b>${money(obj[k])}</b></div>`).join('');
 }
+
 
 function renderReport(r) {
   $('#pPeriod').textContent = r.from === r.to ? showDate(r.from) : showDate(r.from) + ' — ' + showDate(r.to);
@@ -1136,6 +1313,7 @@ function renderReport(r) {
     </div>`;
 }
 
+
 /* ================= ЧЕКЛАР ================= */
 function doPrint(mode) {
   const w = (S.cfg && S.cfg.receiptWidth) || 80;
@@ -1145,6 +1323,7 @@ function doPrint(mode) {
   document.body.dataset.print = mode;
   setTimeout(() => window.print(), 80);
 }
+
 
 function rcWrap(inner) {
   const c = S.cfg;
@@ -1159,6 +1338,7 @@ function rcWrap(inner) {
   </div>`;
   doPrint('receipt');
 }
+
 
 function printVisit(r, deptName) {
   const items = Array.isArray(r.items) && r.items.length
@@ -1185,6 +1365,7 @@ function printVisit(r, deptName) {
     ${r['Ҳолат'] === 'Бекор' ? '<div class="c b">*** БЕКОР ҚИЛИНГАН ***</div>' : ''}`);
 }
 
+
 function printPay(p) {
   rcWrap(`
     <div class="c b">${esc(p.title)}</div>
@@ -1199,6 +1380,7 @@ function printPay(p) {
     </table>
     ${p.note ? `<div class="line"></div><div>${esc(p.note)}</div>` : ''}`);
 }
+
 
 function printStay(v) {
   const s = v.stay, c = v.calc;
@@ -1229,5 +1411,6 @@ function printStay(v) {
       ${bal < 0 ? `<tr class="b"><td>ОРТИҚЧА:</td><td class="r">${money(-bal)} сўм</td></tr>` : ''}
     </table>`);
 }
+
 
 initLogin();
