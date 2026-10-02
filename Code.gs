@@ -7,7 +7,7 @@
  *  2) Deploy → Manage deployments → ✏ → Version: New version → Deploy
  *     (Execute as: Me, Who has access: Anyone). Ҳавола ўзгармайди.
  *
- *  ТЕКШИРИШ: ҳаволани браузерда очинг — {"ok":true,...,"v":"6"} чиқади.
+ *  ТЕКШИРИШ: ҳаволани браузерда очинг — {"ok":true,...,"v":"7"} чиқади.
  *
  *  v4 — ТЕЗЛИК
  *   • Сайт битта сўров билан бугунги ҳамма маълумотни олади («sync»)
@@ -18,7 +18,7 @@
  ******************************************************/
 
 const TZ = 'Asia/Tashkent';
-const VERSION = '6';   // кўрсатиш учун (doGet)
+const VERSION = '7';   // кўрсатиш учун (doGet)
 const SCHEMA = '4';    // варақ тузилиши; фақат устун/варақ қўшилганда оширилади
 const YOTOQ = 'yotoq';
 const S_YOT = 'Ётоқхона';
@@ -100,6 +100,8 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('Клиника')
     .addItem('Ўрнатиш / янгилаш (варақлар)', 'setup')
     .addItem('Кешни тозалаш (нарх, созлама, устунлар)', 'clearCache_')
+    .addSeparator()
+    .addItem('⚠ Синов маълумотларини тозалаш', 'wipeData')
     .addToUi();
 }
 
@@ -110,6 +112,55 @@ function setup() {
   clearCache_();
   try { PropertiesService.getScriptProperties().setProperty('schema', SCHEMA); } catch (e) {}
   try { SpreadsheetApp.getUi().alert('Тайёр! Варақлар яратилди / янгиланди.'); } catch (e) {}
+}
+
+/* ---------- Синов маълумотларини тозалаш ----------
+   Ўчади:  ҳамма бўлим варақларидаги қабуллар, «Тўловлар», «Ётоқ хизматлари», навбат рақамлари.
+   Қолади: «Созламалар», «Фойдаланувчилар», «Хизматлар», «Докторлар» ва устун сарлавҳалари.
+   Аввал жадвалнинг тўлиқ нусхаси олинади. */
+function wipeData() {
+  const ui = SpreadsheetApp.getUi();
+  const r = ui.prompt('Синов маълумотларини тозалаш',
+    'ҲАММА қабуллар, тўловлар, ётоқхона ёзувлари ва навбат рақамлари ўчирилади.\n' +
+    'Нархлар, докторлар, фойдаланувчилар ва созламалар ҚОЛАДИ.\n' +
+    'Аввал жадвалнинг нусхаси олинади.\n\nДавом этиш учун 1234 деб ёзинг:', ui.ButtonSet.OK_CANCEL);
+  if (r.getSelectedButton() !== ui.Button.OK || r.getResponseText().trim() !== '1234') {
+    ui.alert('Бекор қилинди. Ҳеч нарса ўчирилмади.');
+    return;
+  }
+  const res = wipe_(true);
+  ui.alert('Тозаланди: ' + res.rows + ' та қатор ўчирилди.\n' +
+    (res.backup ? 'Нусха: «' + res.backup + '» (Google Drive’да).' : 'Нусха олиб бўлмади.') +
+    '\n\nЁтоқхона навбати давом этиши керак бўлса, «Навбат» варағида «Охирги рақам»ни ёзиб қўйинг.' +
+    '\nСайтда: «Чиқиш» қилиб, қайта киринг.');
+}
+
+function wipe_(backup) {
+  const ss = ss_();
+  let name = '';
+  if (backup) {
+    try {
+      name = ss.getName() + ' — нусха ' + fmt_(new Date(), 'yyyy-MM-dd HH:mm');
+      ss.copy(name);
+    } catch (e) { name = ''; }
+  }
+  let rows = 0;
+  DEPTS.map(d => d.name).concat([S_PAY, S_CHG]).forEach(n => {
+    const sh = ss.getSheetByName(n);
+    if (!sh) return;
+    const last = sh.getLastRow(), cols = sh.getLastColumn();
+    if (last < 2 || cols < 1) return;
+    sh.getRange(2, 1, last - 1, cols).clearContent();
+    rows += last - 1;
+  });
+  const q = ss.getSheetByName('Навбат');
+  if (q && q.getLastRow() > 1) {
+    const n = q.getLastRow() - 1;
+    q.getRange(2, 2, n, 2).setValues(Array.from({ length: n }, () => [0, '']));
+  }
+  clearCache_();
+  bump_();
+  return { rows: rows, backup: name };
 }
 
 // Биринчи сўровда варақлар ва янги устунларни ўзи яратади.
