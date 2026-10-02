@@ -7,7 +7,7 @@
  *  2) Deploy → Manage deployments → ✏ → Version: New version → Deploy
  *     (Execute as: Me, Who has access: Anyone). Ҳавола ўзгармайди.
  *
- *  ТЕКШИРИШ: ҳаволани браузерда очинг — {"ok":true,...,"v":"8"} чиқади.
+ *  ТЕКШИРИШ: ҳаволани браузерда очинг — {"ok":true,...,"v":"9"} чиқади.
  *
  *  v4 — ТЕЗЛИК
  *   • Сайт битта сўров билан бугунги ҳамма маълумотни олади («sync»)
@@ -18,7 +18,7 @@
  ******************************************************/
 
 const TZ = 'Asia/Tashkent';
-const VERSION = '8';   // кўрсатиш учун (doGet)
+const VERSION = '9';   // кўрсатиш учун (doGet)
 const SCHEMA = '5';    // варақ тузилиши; фақат устун/варақ қўшилганда оширилади
 const YOTOQ = 'yotoq';
 const S_BASE = 'База';      // ҳамма амбулатор қабуллар шу ерда; бўлим варақлари — шундан формула билан олинган кўриниш
@@ -364,7 +364,7 @@ function cached_(key, ttl, fn) {
 }
 
 function clearCache_() {
-  const keys = ['cfg', 'users', 'schema', 'ver', 'sync_n'];
+  const keys = ['cfg', 'users', 'users2', 'schema', 'ver', 'sync_n'];
   [S_BASE, S_YOT, S_PAY, S_CHG].forEach(n => keys.push('h:' + n));
   ['debts_', 'repall_'].forEach(k => { keys.push(k + 'n'); for (let i = 0; i < 40; i++) keys.push(k + i); });
   for (let i = 0; i < 40; i++) keys.push('sync_' + i);
@@ -659,7 +659,7 @@ function days_(a, b) {
 }
 
 function users_() {
-  return cached_('users', 600, () => sh_('Фойдаланувчилар').getDataRange().getDisplayValues().slice(1)
+  return cached_('users2', 600, () => sh_('Фойдаланувчилар').getDataRange().getDisplayValues().slice(1)
     .map(r => [String(r[0]), String(r[1]).trim(), String(r[2]).trim().toLowerCase()])
     .filter(r => r[1] !== '')
     .map(r => r.concat([pinTag_(r[1])])));
@@ -674,12 +674,22 @@ function auth_(pin) {
 /* Рухсатнома (token): бир марта PIN билан кирилгач, сайт шуни сақлайди ва PIN қайта сўралмайди.
    PIN варақда ўзгартирилса ёки ўчирилса — рухсатнома ҳам бекор бўлади. */
 function secret_() {
-  return cached_('sec', 21600, () => {
-    const p = PropertiesService.getScriptProperties();
-    let s = p.getProperty('secret');
-    if (!s) { s = Utilities.getUuid() + Utilities.getUuid(); p.setProperty('secret', s); }
-    return s;
-  });
+  const c = cache_();
+  try { const v = c && c.get('sec2'); if (v) return v; } catch (e) {}
+  const p = PropertiesService.getScriptProperties();
+  let s = p.getProperty('secret');
+  if (!s) {
+    // Махфий калит фақат бир марта, қулф остида яратилади — икки сўров бир вақтда
+    // келса ҳам иккаласи бир хил калитни олади (акс ҳолда рухсатнома дарҳол бекор бўлиб қоларди).
+    const lock = LockService.getScriptLock();
+    lock.waitLock(20000);
+    try {
+      s = p.getProperty('secret');
+      if (!s) { s = Utilities.getUuid() + Utilities.getUuid(); p.setProperty('secret', s); }
+    } finally { try { lock.releaseLock(); } catch (e) {} }
+  }
+  try { if (c) c.put('sec2', s, 21600); } catch (e) {}
+  return s;
 }
 
 function sign_(m) {
