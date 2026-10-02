@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="uz-Cyrl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Клиника</title>
+  <link rel="stylesheet" href="style.css">
+  <style id="pageStyle">@page { size: 80mm auto; margin: 0; }</style>
+</head>
+<body>
+
+<!-- КИРИШ -->
+<div id="login" class="screen">
+  <div class="login-box card">
+    <div class="logo">✚</div>
+    <h1>Клиника</h1>
+    <p class="muted">Тизимга кириш</p>
+
+    <div id="urlBox" class="hidden">
+      <label>API манзили (Apps Script URL)
+        <input id="apiUrl" placeholder="https://script.google.com/macros/s/.../exec">
+      </label>
+    </div>
+
+    <label>PIN-код
+      <input id="pin" type="password" inputmode="numeric" autocomplete="off">
+    </label>
+    <button id="loginBtn" class="btn primary wide">Кириш</button>
+    <p id="loginErr" class="err"></p>
+    <a href="#" id="changeUrl" class="small">API манзилини ўзгартириш</a>
+  </div>
+</div>
+
+<!-- ИЛОВА -->
+<div id="app" class="hidden">
+  <header>
+    <div class="brand"><span class="logo sm">✚</span> <span id="brand">Клиника</span></div>
+    <nav>
+      <button class="tab active" data-view="qabul">Қабул</button>
+      <button class="tab" data-view="royxat">Рўйхат</button>
+      <button class="tab admin-only" data-view="panel">Бошқарув панели</button>
+    </nav>
+    <div class="user"><span id="userName"></span><button id="logout" class="btn ghost sm">Чиқиш</button></div>
+  </header>
+
+  <main>
+    <!-- ҚАБУЛ -->
+    <section id="v-qabul" class="view">
+      <h2>Бўлимни танланг</h2>
+      <div id="deptGrid" class="dept-grid"></div>
+
+      <form id="qForm" class="card hidden" autocomplete="off">
+        <div class="form-head">
+          <h3 id="fTitle"></h3>
+          <button type="button" id="closeForm" class="btn ghost sm">Ёпиш</button>
+        </div>
+
+        <div class="grid">
+          <label class="span2">Ф.И.Ш *<input name="fio"></label>
+          <label>Туғилган йил<input name="year" inputmode="numeric" maxlength="4"></label>
+          <label>Телефон<input name="phone" inputmode="tel"></label>
+          <label>Доктор<select name="doctor"></select></label>
+          <label>Юборган доктор<input name="referrer" list="docList" placeholder="Ким юборди"></label>
+        </div>
+
+        <div id="extraBox" class="grid"></div>
+
+        <h4>Хизматлар</h4>
+        <div class="svc-head"><span>Хизмат</span><span>Сони</span><span>Нарх</span></div>
+        <div id="svcBox" class="svc-list"></div>
+        <button type="button" id="addCustom" class="btn ghost sm">+ Бошқа хизмат</button>
+
+        <div class="grid total-row">
+          <label>Тўлов тури<select name="payment"></select></label>
+          <label>Жами сумма (сўм)<input name="sum" inputmode="numeric" class="sum-input"></label>
+          <label class="span2">Изоҳ<input name="note"></label>
+        </div>
+
+        <div class="actions">
+          <button type="submit" class="btn primary big">Сақлаш ва чек чиқариш</button>
+        </div>
+      </form>
+      <datalist id="docList"></datalist>
+    </section>
+
+    <!-- РЎЙХАТ -->
+    <section id="v-royxat" class="view hidden">
+      <div class="toolbar">
+        <select id="lDept"></select>
+        <input type="date" id="lDate">
+        <label class="chk hidden" id="lActiveWrap"><input type="checkbox" id="lActive"> Ҳозир ётганлар</label>
+        <button id="lLoad" class="btn">Янгилаш</button>
+      </div>
+      <div id="lSummary" class="summary"></div>
+      <div class="table-wrap card"><table id="lTable"></table></div>
+    </section>
+
+    <!-- БОШҚАРУВ ПАНЕЛИ -->
+    <section id="v-panel" class="view hidden">
+      <div class="toolbar">
+        <button class="btn sm range" data-range="today">Бугун</button>
+        <button class="btn sm range" data-range="yesterday">Кеча</button>
+        <button class="btn sm range" data-range="month">Шу ой</button>
+        <button class="btn sm range" data-range="lastmonth">Ўтган ой</button>
+        <input type="date" id="pFrom"> <span>—</span> <input type="date" id="pTo">
+        <button id="pLoad" class="btn primary">Кўрсатиш</button>
+      </div>
+      <div id="pCards" class="cards"></div>
+      <div class="two">
+        <div class="card"><h3>Бўлимлар</h3><div class="table-wrap"><table id="pDepts"></table></div></div>
+        <div class="card"><h3>Докторлар</h3><div class="table-wrap"><table id="pDocs"></table></div></div>
+      </div>
+      <div class="two">
+        <div class="card"><h3>Юборган докторлар</h3><div class="table-wrap"><table id="pRefs"></table></div></div>
+        <div class="card"><h3>Кунлар бўйича тушум</h3><div id="pDays"></div></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="receipt"></div>
+<div id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
