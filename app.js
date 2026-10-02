@@ -4,7 +4,7 @@
    Apps Script'ни Web app қилиб жойлагандан кейин берилган
    URL'ни шу ерга қўйинг (ёки кириш саҳифасида киритинг):
    ========================================================== */
-const DEFAULT_API_URL = '';
+const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzDpE8-WmbNLW_IVbJqU19t4D__cPtv6jz-PUnDiesOA9RFMfUUlXh2TXJevToSZNTiGw/exec';
 
 /* ---------- Ёрдамчилар ---------- */
 const $ = (s, r = document) => r.querySelector(s);
