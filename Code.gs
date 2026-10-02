@@ -7,7 +7,7 @@
  *  2) Deploy → Manage deployments → ✏ → Version: New version → Deploy
  *     (Execute as: Me, Who has access: Anyone). Ҳавола ўзгармайди.
  *
- *  ТЕКШИРИШ: ҳаволани браузерда очинг — {"ok":true,...,"v":"5"} чиқади.
+ *  ТЕКШИРИШ: ҳаволани браузерда очинг — {"ok":true,...,"v":"6"} чиқади.
  *
  *  v4 — ТЕЗЛИК
  *   • Сайт битта сўров билан бугунги ҳамма маълумотни олади («sync»)
@@ -18,7 +18,8 @@
  ******************************************************/
 
 const TZ = 'Asia/Tashkent';
-const SCHEMA = '5';
+const VERSION = '6';   // кўрсатиш учун (doGet)
+const SCHEMA = '4';    // варақ тузилиши; фақат устун/варақ қўшилганда оширилади
 const YOTOQ = 'yotoq';
 const S_YOT = 'Ётоқхона';
 const S_PAY = 'Тўловлар';
@@ -117,12 +118,21 @@ function migrate_() {
   if (c && c.get('schema') === SCHEMA) return;
   let p = null;
   try { p = PropertiesService.getScriptProperties(); } catch (e) {}
-  if (!p || p.getProperty('schema') !== SCHEMA) {
-    clearCache_();
-    build_();
-    resyncStays_();
-    clearCache_();
-    if (p) p.setProperty('schema', SCHEMA);
+  const have = p ? (Number(p.getProperty('schema')) || 0) : 0;
+  if (have < Number(SCHEMA)) {
+    // Фақат битта сўров янгилайди, қолганлари кутиб туради (бир вақтда бир неча марта қурилмасин)
+    const lock = LockService.getScriptLock();
+    lock.waitLock(60000);
+    try {
+      const again = p ? (Number(p.getProperty('schema')) || 0) : 0;
+      if (again < Number(SCHEMA)) {
+        clearCache_();
+        build_();
+        resyncStays_();
+        clearCache_();
+        if (p) p.setProperty('schema', SCHEMA);
+      }
+    } finally { try { lock.releaseLock(); } catch (e) {} }
   }
   if (c) { try { c.put('schema', SCHEMA, 21600); } catch (e) {} }
 }
@@ -317,7 +327,7 @@ function memo_(key, tag, fn) {
 /* ================= API ================= */
 
 function doGet() {
-  return out_(JSON.stringify({ ok: true, msg: 'Клиника API ишлаяпти', v: SCHEMA }));
+  return out_(JSON.stringify({ ok: true, msg: 'Клиника API ишлаяпти', v: VERSION, schema: SCHEMA }));
 }
 
 const MUTATING = ['add', 'cancel', 'setField', 'payDebt', 'stayAdmit', 'stayOp'];
@@ -370,9 +380,9 @@ function route_(req, user) {
     case 'staysDone': return { rows: staysDone_() };
     case 'stayAdmit': return { stay: stayAdmit_(req.data || {}, user) };
     case 'stayOp':    return { stay: stayOp_(req, user) };
-    case 'report':
+    case 'reportAll':
       if (user.role !== 'админ') throw new Error('Фақат админ учун');
-      return { report: report_(req.from, req.to) };
+      return { report: reportAll_() };
     default: throw new Error('Номаълум амал: ' + req.action + ' (Apps Script’да эски код турган бўлиши мумкин)');
   }
 }
@@ -948,75 +958,72 @@ function stayOp_(req, user) {
 
 /* ================= ҲИСОБОТ ================= */
 
-function report_(from, to) {
-  const today = today_();
-  from = from || today;
-  to = to || from;
-  return memo_('rep_' + from + '_' + to, ver_(), () => reportRead_(from, to, today));
+function inc_(o, k, v) { o[k] = (o[k] || 0) + v; }
+
+// Кунлар бўйича тайёр жамланма (охирги 400 кун). Сайт исталган даврни ўзида йиғади.
+function reportAll_() {
+  const ver = ver_();
+  return memo_('repall_', ver, () => reportAllRead_(ver));
 }
 
-function reportRead_(from, to, today) {
-  const inR = d => !!d && String(d) >= from && String(d) <= to;
-  const res = {
-    from: from, to: to,
-    cash: { total: 0, count: 0, byPay: {}, byKind: {}, byDay: {} },
-    billed: { total: 0, count: 0, debt: 0, share: 0 },
-    debtNow: { total: 0, count: 0 },
-    inpatients: { count: 0, total: 0, paid: 0, balance: 0 },
-    cancelled: 0, depts: [], doctors: [], referrers: []
-  };
-  const cashDept = {};
+function reportAllRead_(ver) {
+  const today = today_();
+  const minDate = fmt_(new Date(Date.now() - 400 * 86400000), 'yyyy-MM-dd');
+  const days = {};
+  const D = dt => days[dt] || (days[dt] = { cash: 0, cashN: 0, byPay: {}, byKind: {}, cashDept: {}, depts: {}, docs: {}, refs: {}, cancelled: 0 });
 
   readAll_(S_PAY).rows.forEach(p => {
-    if (p['Ҳолат'] === 'Бекор' || !inR(p['Сана'])) return;
-    const s = n_(p['Сумма']);
-    const pt = p['Тўлов тури'] || '—', kd = p['Тури'] || '—';
-    res.cash.total += s; res.cash.count++;
-    res.cash.byPay[pt] = (res.cash.byPay[pt] || 0) + s;
-    res.cash.byKind[kd] = (res.cash.byKind[kd] || 0) + s;
-    res.cash.byDay[p['Сана']] = (res.cash.byDay[p['Сана']] || 0) + s;
-    cashDept[p['Бўлим']] = (cashDept[p['Бўлим']] || 0) + s;
+    if (p['Ҳолат'] === 'Бекор') return;
+    const dt = String(p['Сана'] || '');
+    if (!dt || dt < minDate) return;
+    const x = D(dt), s = n_(p['Сумма']);
+    x.cash += s; x.cashN++;
+    inc_(x.byPay, p['Тўлов тури'] || '—', s);
+    inc_(x.byKind, p['Тури'] || '—', s);
+    inc_(x.cashDept, p['Бўлим'] || '—', s);
   });
 
-  const docs = {}, refs = {};
+  const res = {
+    ver: ver, today: today, minDate: minDate, deptNames: DEPTS.map(d => d.name), days: days,
+    debtNow: { total: 0, count: 0 }, inpatients: { count: 0, total: 0, paid: 0, balance: 0 }
+  };
+
   DEPTS.forEach(d => {
-    const r = { name: d.name, count: 0, sum: 0, cash: cashDept[d.name] || 0, debt: 0, share: 0 };
     const isY = d.key === YOTOQ;
-    if (ss_().getSheetByName(d.name)) {
-      readAll_(d.name).rows.forEach(o => {
-        if (o['Ҳолат'] === 'Бекор') { if (inR(o['Сана'])) res.cancelled++; return; }
-        if (isY && stayActive_(o)) {
-          // Ҳали ётганлар — жорий ҳисоб (бугунгача)
-          const total = days_(o['Келган сана'] || o['Сана'], today) * n_(o['Кунлик нарх']) + n_(o['Муолажалар суммаси']);
-          const paid = n_(o['Тўланган']);
-          res.inpatients.count++; res.inpatients.total += total;
-          res.inpatients.paid += paid; res.inpatients.balance += total - paid;
-          return;
-        }
-        const debt = n_(o['Қарз']);
-        if (debt > 0) { res.debtNow.total += debt; res.debtNow.count++; }
-        const dt = isY ? (o['Кетган сана'] || o['Сана']) : o['Сана'];
-        if (!inR(dt)) return;
-        const s = n_(o['Сумма']), share = n_(o['Доктор улуши']);
-        r.count++; r.sum += s; r.debt += debt; r.share += share;
-        if (o['Доктор']) {
-          const k = o['Доктор'] + '|' + d.name;
-          docs[k] = docs[k] || { name: o['Доктор'], dept: d.name, count: 0, sum: 0, share: 0 };
-          docs[k].count++; docs[k].sum += s; docs[k].share += share;
-        }
-        if (o['Юборган доктор']) {
-          const k = String(o['Юборган доктор']).trim();
-          refs[k] = refs[k] || { name: k, count: 0, sum: 0 };
-          refs[k].count++; refs[k].sum += s;
-        }
-      });
-    }
-    res.billed.total += r.sum; res.billed.count += r.count;
-    res.billed.debt += r.debt; res.billed.share += r.share;
-    res.depts.push(r);
+    if (!ss_().getSheetByName(d.name)) return;
+    readAll_(d.name).rows.forEach(o => {
+      if (o['Ҳолат'] === 'Бекор') {
+        const dt0 = String(o['Сана'] || '');
+        if (dt0 && dt0 >= minDate) D(dt0).cancelled++;
+        return;
+      }
+      if (isY && stayActive_(o)) {
+        // Ҳали ётганлар — жорий ҳисоб (бугунгача)
+        const total = days_(o['Келган сана'] || o['Сана'], today) * n_(o['Кунлик нарх']) + n_(o['Муолажалар суммаси']);
+        const paid = n_(o['Тўланган']);
+        res.inpatients.count++; res.inpatients.total += total;
+        res.inpatients.paid += paid; res.inpatients.balance += total - paid;
+        return;
+      }
+      const debt = n_(o['Қарз']);
+      if (debt > 0) { res.debtNow.total += debt; res.debtNow.count++; }
+      const dt = String((isY ? (o['Кетган сана'] || o['Сана']) : o['Сана']) || '');
+      if (!dt || dt < minDate) return;
+      const x = D(dt);
+      const s = n_(o['Сумма']), share = n_(o['Доктор улуши']);
+      const dd = x.depts[d.name] || (x.depts[d.name] = { count: 0, sum: 0, debt: 0, share: 0 });
+      dd.count++; dd.sum += s; dd.debt += debt; dd.share += share;
+      if (o['Доктор']) {
+        const k = o['Доктор'] + '|' + d.name;
+        const g = x.docs[k] || (x.docs[k] = { name: o['Доктор'], dept: d.name, count: 0, sum: 0, share: 0 });
+        g.count++; g.sum += s; g.share += share;
+      }
+      if (o['Юборган доктор']) {
+        const k = String(o['Юборган доктор']).trim();
+        const g = x.refs[k] || (x.refs[k] = { count: 0, sum: 0 });
+        g.count++; g.sum += s;
+      }
+    });
   });
-
-  res.doctors = Object.keys(docs).map(k => docs[k]).sort((a, b) => b.sum - a.sum);
-  res.referrers = Object.keys(refs).map(k => refs[k]).sort((a, b) => b.sum - a.sum);
   return res;
 }

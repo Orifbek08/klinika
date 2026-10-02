@@ -117,7 +117,7 @@ function persist() {
   sess.set('db', JSON.stringify({ date: DB.date, ver: DB.ver, lists: DB.lists, stays: DB.stays, debts: DB.debts, debtsVer: DB.debtsVer || '' }));
 }
 
-function dropReports() { Object.keys(C).forEach(k => { if (k.indexOf('report:') === 0) delete C[k]; }); }
+function dropReports() { if (S.view === 'hisobot') repLabel(); }
 
 function applySync(d) {
   if (!d || d.same) return false;
@@ -1240,30 +1240,88 @@ function setRange(k) {
 }
 
 
+/* Ҳисобот: сервер бир марта кунлар бўйича жамланма беради (REP.all), даврлар шу ердан йиғилади.
+   Охирги ҳисобот сақланиб туради; «Янгилаш» босилганда (ёки 10 дақиқадан эскирса ва ўзгариш бўлса) янгиланади. */
+const REP = { all: null, at: 0 };
+let repBusy = false;
+
 function bindReport() {
   $('#pRange').addEventListener('seg', e => { setRange(e.detail); loadReport(); });
   $('#pLoad').onclick = () => { $$('#pRange button').forEach(b => b.classList.remove('on')); loadReport(); };
+  $('#pRefresh').onclick = () => loadReport(true);
   $('#pPrint').onclick = () => { if (S.report) doPrint('report'); };
+  try {
+    const r = JSON.parse(sess.get('rep') || 'null');
+    if (r && r.all && r.all.days) { REP.all = r.all; REP.at = r.at || 0; }
+  } catch (e) {}
 }
 
+function repLabel() {
+  const el = $('#pUpd');
+  if (!REP.all) { el.innerHTML = ''; return; }
+  const d = new Date(REP.at);
+  const stale = !!DB.ver && REP.all.ver !== DB.ver;
+  el.innerHTML = '· янгиланди ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) +
+    (stale ? ' · <b class="neg">янги ёзувлар бор — «Янгилаш»ни босинг</b>' : '');
+}
 
-async function loadReport() {
+// Жамланмадан танланган давр учун ҳисобот йиғади (серверга мурожаатсиз)
+function aggReport(all, from, to) {
+  from = from || all.today; to = to || from;
+  const r = { from: from, to: to, cash: { total: 0, count: 0, byPay: {}, byKind: {}, byDay: {} },
+    billed: { total: 0, count: 0, debt: 0, share: 0 }, debtNow: all.debtNow, inpatients: all.inpatients,
+    cancelled: 0, depts: [], doctors: [], referrers: [] };
+  const dm = {};
+  const dep = n => dm[n] || (dm[n] = { name: n, count: 0, sum: 0, cash: 0, debt: 0, share: 0 });
+  (all.deptNames || []).forEach(dep);
+  const docs = {}, refs = {};
+  const add = (o, src) => Object.keys(src).forEach(k => { o[k] = (o[k] || 0) + src[k]; });
+  Object.keys(all.days).forEach(dt => {
+    if (dt < from || dt > to) return;
+    const x = all.days[dt];
+    r.cash.total += x.cash; r.cash.count += x.cashN;
+    add(r.cash.byPay, x.byPay); add(r.cash.byKind, x.byKind);
+    if (x.cash) r.cash.byDay[dt] = x.cash;
+    Object.keys(x.cashDept).forEach(n => { dep(n).cash += x.cashDept[n]; });
+    Object.keys(x.depts).forEach(n => { const a = x.depts[n], m = dep(n); m.count += a.count; m.sum += a.sum; m.debt += a.debt; m.share += a.share; });
+    Object.keys(x.docs).forEach(k => { const a = x.docs[k], g = docs[k] || (docs[k] = { name: a.name, dept: a.dept, count: 0, sum: 0, share: 0 }); g.count += a.count; g.sum += a.sum; g.share += a.share; });
+    Object.keys(x.refs).forEach(k => { const a = x.refs[k], g = refs[k] || (refs[k] = { name: k, count: 0, sum: 0 }); g.count += a.count; g.sum += a.sum; });
+    r.cancelled += x.cancelled;
+  });
+  r.depts = Object.keys(dm).map(n => dm[n]);
+  r.depts.forEach(d => { r.billed.total += d.sum; r.billed.count += d.count; r.billed.debt += d.debt; r.billed.share += d.share; });
+  r.doctors = Object.keys(docs).map(k => docs[k]).sort((a, b) => b.sum - a.sum);
+  r.referrers = Object.keys(refs).map(k => refs[k]).sort((a, b) => b.sum - a.sum);
+  return r;
+}
+
+function showReport() {
+  if (!REP.all) return;
+  S.report = aggReport(REP.all, $('#pFrom').value, $('#pTo').value);
+  renderReport(S.report);
+  repLabel();
+}
+
+async function loadReport(force) {
   if (!S.user || S.user.role !== 'админ') return;
-  const from = $('#pFrom').value, to = $('#pTo').value;
-  const ck = 'report:' + from + ':' + to;
-  S.reportKey = ck;
-  if (C[ck]) { S.report = C[ck]; renderReport(C[ck]); }
+  if (REP.all) showReport();
   else $('#pBody').innerHTML = '<p class="muted pad">Юкланмоқда…</p>';
+  const stale = !REP.all || REP.all.ver !== DB.ver;
+  const old = !REP.all || Date.now() - REP.at > 10 * 60 * 1000;
+  if (repBusy || !(force || !REP.all || (stale && old))) return;
+  repBusy = true;
+  busy($('#pRefresh'), true);
   try {
-    const j = await api('report', { from: from, to: to });
-    C[ck] = j.report;
-    if (S.reportKey !== ck) return;
-    S.report = j.report;
-    renderReport(j.report);
+    const j = await api('reportAll');
+    REP.all = j.report; REP.at = Date.now();
+    sess.set('rep', JSON.stringify(REP));
+    showReport();
   } catch (e) {
-    if (S.reportKey !== ck) return;
-    if (C[ck]) toast(e.message, true);
+    if (REP.all) toast(e.message, true);
     else $('#pBody').innerHTML = `<p class="err pad">${esc(e.message)}</p>`;
+  } finally {
+    repBusy = false;
+    busy($('#pRefresh'), false);
   }
 }
 

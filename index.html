@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=5">
+  <link rel="stylesheet" href="style.css?v=7">
   <style id="pageStyle">@page { size: 80mm auto; margin: 0; }</style>
 </head>
 <body>
@@ -145,7 +145,7 @@
     <!-- ҲИСОБОТ -->
     <section id="v-hisobot" class="view hidden">
       <header class="page-head">
-        <div><h2>Ҳисобот</h2><p class="muted" id="pPeriod"></p></div>
+        <div><h2>Ҳисобот</h2><p class="muted"><span id="pPeriod"></span> <span id="pUpd"></span></p></div>
         <div class="tools no-print">
           <div class="seg" id="pRange">
             <button type="button" data-v="today" class="on">Бугун</button>
@@ -156,6 +156,7 @@
           </div>
           <input type="date" id="pFrom"><span class="muted">—</span><input type="date" id="pTo">
           <button id="pLoad" class="btn primary">Кўрсатиш</button>
+          <button id="pRefresh" class="btn" title="Сервердан қайта ҳисоблаш">Янгилаш</button>
           <button id="pPrint" class="btn">Чоп этиш</button>
         </div>
       </header>
@@ -172,6 +173,6 @@
 <div id="receipt"></div>
 <div id="toast"></div>
 
-<script src="app.js?v=6"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>
