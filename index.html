@@ -67,7 +67,7 @@
             <button type="button" id="closeForm" class="btn ghost sm">Ёпиш</button>
           </div>
           <div class="grid g4">
-            <label class="f span2">Ф.И.Ш *<input name="fio"></label>
+            <label class="f span2">Ф.И.Ш *<input name="fio" list="patList"></label>
             <label class="f">Туғилган йил<input name="year" inputmode="numeric" maxlength="4"></label>
             <label class="f">Телефон<input name="phone" inputmode="tel" placeholder="90 123 45 67"></label>
             <label class="f span2">Доктор<select name="doctor"></select></label>
@@ -96,6 +96,7 @@
         </aside>
       </form>
       <datalist id="docList"></datalist>
+      <datalist id="patList"></datalist>
     </section>
 
     <!-- РЎЙХАТ -->
@@ -173,6 +174,6 @@
 <div id="receipt"></div>
 <div id="toast"></div>
 
-<script src="app.js?v=7"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>

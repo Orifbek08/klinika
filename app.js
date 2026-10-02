@@ -29,7 +29,7 @@ let pending = 0;        // жорий сўровлар
 let W = 0;              // навбатдаги ёзишлар
 let Q = Promise.resolve();
 let started = false, wantSync = false, tmpN = 0;
-const S = { pin: null, user: null, cfg: null, dept: null, list: [], listDept: null,
+const S = { pin: null, token: null, user: null, cfg: null, dept: null, list: [], listDept: null,
   paidTouched: false, stayMode: 'active', stays: [], stayId: null, stayObj: null, view: 'qabul', report: null };
 
 const pad = n => String(n).padStart(2, '0');
@@ -70,14 +70,14 @@ async function callOnce(url, body) {
     const txt = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 300);
     const err = new Error('Apps Script хатоси: ' + (txt || 'бўш жавоб (HTTP ' + res.status + ')')); err.retry = true; throw err;
   }
-  if (!j.ok) throw new Error(j.error || 'Хатолик');
+  if (!j.ok) { const err = new Error(j.error || 'Хатолик'); err.auth = !!j.auth; throw err; }
   return j;
 }
 
 async function api(action, payload) {
   const url = apiUrl();
   if (!url) throw new Error('API манзили киритилмаган');
-  const req = Object.assign({ action: action, pin: S.pin }, payload || {});
+  const req = Object.assign({ action: action }, S.token ? { t: S.token } : { pin: S.pin }, payload || {});
   // rid — қайта уринишда сервер иккинчи марта ёзмаслиги учун
   if (MUTATING.indexOf(action) >= 0) req.rid = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
   const body = JSON.stringify(req);
@@ -114,7 +114,7 @@ function write(action, payload) {
 }
 
 function persist() {
-  sess.set('db', JSON.stringify({ date: DB.date, ver: DB.ver, lists: DB.lists, stays: DB.stays, debts: DB.debts, debtsVer: DB.debtsVer || '' }));
+  store.set('db', JSON.stringify({ date: DB.date, ver: DB.ver, lists: DB.lists, stays: DB.stays, debts: DB.debts, debtsVer: DB.debtsVer || '' }));
 }
 
 function dropReports() { if (S.view === 'hisobot') repLabel(); }
@@ -130,7 +130,7 @@ function applySync(d) {
 
 // Сервердан янги ҳолатни олади (ўзгариш бўлмаса — жуда енгил жавоб).
 async function sync(force) {
-  if (!S.pin) return;
+  if (!S.token) return;
   if (W) { if (force) wantSync = true; return; }
   try {
     const j = await api('sync', force ? {} : { ver: DB.ver, date: DB.date });
@@ -146,8 +146,16 @@ async function sync(force) {
       else if (wasActive) closeSheet();   // бошқа компьютерда чиқарилган ёки бекор қилинган
     }
   } catch (e) {
+    if (e.auth) return relogin(e.message);
     if (force) toast(e.message, true);
   }
+}
+
+// Рухсатнома бекор бўлган (PIN ўзгарган ёки муддати тугаган) — кириш ойнасига қайтамиз
+function relogin(msg) {
+  store.del('auth'); S.token = null;
+  showLogin(msg || '');
+  $('#pin').value = ''; $('#pin').focus();
 }
 
 function toast(msg, bad) {
@@ -217,27 +225,35 @@ function initLogin() {
   $('#loginBtn').onclick = doLogin;
   $('#pin').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
 
-  const saved = sess.get('pin');
-  if (saved && apiUrl()) {
-    S.pin = saved;
-    // Саҳифа янгиланганда сақланган маълумот билан дарҳол очилади, сервердан орқа фонда текширилади
-    let boot = null, db = null;
-    try { boot = JSON.parse(sess.get('boot') || 'null'); db = JSON.parse(sess.get('db') || 'null'); } catch (e) {}
-    if (boot && boot.pin === saved && boot.user && boot.cfg) {
-      S.user = boot.user; S.cfg = boot.cfg;
-      if (db && db.date === today()) { Object.assign(DB, db); if (!Array.isArray(DB.debts)) { DB.debts = null; DB.debtsVer = ''; } }
-      if (enter()) { login(true, true); return; }
-    }
-    login(true);
-  } else {
-    $('#pin').focus();
+  // Олдин кирилган бўлса — PIN сўралмайди: сақланган маълумот билан дарҳол очилади,
+  // сервердан орқа фонда янгиланади.
+  let a = null, db = null;
+  try { a = JSON.parse(store.get('auth') || 'null'); db = JSON.parse(store.get('db') || 'null'); } catch (e) {}
+  if (a && a.token && a.exp > Date.now() + 60000 && a.user && a.cfg && apiUrl()) {
+    S.token = a.token; S.user = a.user; S.cfg = a.cfg;
+    if (db && db.date === today()) { Object.assign(DB, db); if (!Array.isArray(DB.debts)) { DB.debts = null; DB.debtsVer = ''; } }
+    if (enter()) { login(true, true); return; }
   }
+  S.token = null;
+  warmUp();
+  $('#pin').focus();
+  $('#pin').addEventListener('input', warmUp);
+}
+
+/* Google скрипти биринчи мурожаатда 2–4 сония «уйғонади». PIN терилаётганда
+   олдиндан уйғотиб қўямиз — кириш тезроқ бўлади. */
+let warmAt = 0;
+function warmUp() {
+  if (!apiUrl() || Date.now() - warmAt < 4 * 60000) return;
+  warmAt = Date.now();
+  fetch(apiUrl()).catch(() => {});
 }
 
 function doLogin() {
   const u = $('#apiUrl').value.trim();
   if (u) store.set('apiUrl', u);
   S.pin = $('#pin').value.trim();
+  S.token = null;
   if (!S.pin) { $('#loginErr').textContent = 'PIN киритинг'; return; }
   login(false);
 }
@@ -252,20 +268,21 @@ async function login(silent, background) {
     if (!j.user || !j.config || !Array.isArray(j.config.depts) || !j.data) {
       throw new Error('Сервер жавоби тўлиқ эмас. Apps Script’га янги Code.gs (v4) қўйилиб, «New version» қилиб deploy қилинганини текширинг.');
     }
+    if (!j.token) throw new Error('Сервер рухсатнома бермади. Apps Script’га янги Code.gs (v8) қўйилганини текширинг.');
     S.user = j.user;
     S.cfg = j.config;
-    sess.set('pin', S.pin);
-    sess.set('boot', JSON.stringify({ pin: S.pin, user: S.user, cfg: S.cfg }));
+    S.token = j.token; S.pin = null;
+    store.set('auth', JSON.stringify({ token: j.token, exp: j.exp, user: S.user, cfg: S.cfg }));
+    if (S.user.role !== 'админ') store.del('rep');   // ҳисобот фақат админга
     if (!W) applySync(j.data);
     if (background) { applyConfig(); refreshView(); } else enter();
     loadDebts(true);
   } catch (e) {
     if (background) {
-      if (/PIN/.test(e.message)) { sess.del('pin'); sess.del('boot'); sess.del('db'); location.reload(); }
-      else toast(e.message, true);
+      if (e.auth) relogin(e.message); else toast(e.message, true);
       return;
     }
-    sess.del('pin'); sess.del('boot');
+    S.token = null;
     showLogin(silent ? '' : e.message);
   } finally {
     if (!background) busy(b, false);
@@ -289,7 +306,7 @@ function enter() {
     return true;
   } catch (e) {
     console.error(e);
-    sess.del('boot');
+    store.del('auth');
     showLogin('Иловани очишда хато: ' + e.message);
     return false;
   }
@@ -327,7 +344,7 @@ function startApp() {
   });
   $('#lDate').value = today();
   $$('.nav').forEach(t => { t.onclick = () => showView(t.dataset.view); });
-  $('#logout').onclick = () => { sess.del('pin'); sess.del('boot'); sess.del('db'); location.reload(); };
+  $('#logout').onclick = () => { ['auth', 'db', 'rep'].forEach(k => store.del(k)); location.reload(); };
 
   bindForm();
   bindList();
@@ -442,15 +459,42 @@ function openForm(key) {
     '<p class="muted note">Бу бўлимга хизмат қўшилмаган. «+ Бошқа хизмат»ни босинг ёки Sheets’даги «Хизматлар» варағига қўшинг.</p>';
   if (svcs.length === 1) $('#svcBox .s-on').checked = true;
 
+  fillPatients();
   calcSum();
   f.scrollIntoView({ behavior: 'smooth', block: 'start' });
   setTimeout(() => f.fio.focus(), 250);
 }
 
 
+// Бугун ёзилган беморлар: исм танланса йил ва телефон ўзи тўлади (бир бемор — бир неча бўлим)
+function patientsToday() {
+  const m = {};
+  Object.keys(DB.lists).forEach(k => (DB.lists[k] || []).forEach(r => {
+    const n = String(r['Ф.И.Ш'] || '').trim();
+    if (n && r['Ҳолат'] !== 'Бекор' && !m[n.toLowerCase()]) m[n.toLowerCase()] = { fio: n, year: r['Туғилган йил'] || '', phone: r['Телефон'] || '', dept: (deptBy(k) || {}).name || '' };
+  }));
+  DB.stays.forEach(s => {
+    const n = String(s['Ф.И.Ш'] || '').trim();
+    if (n && !m[n.toLowerCase()]) m[n.toLowerCase()] = { fio: n, year: s['Туғилган йил'] || '', phone: s['Телефон'] || '', dept: YOTOQ_NAME };
+  });
+  return m;
+}
+
+function fillPatients() {
+  const m = patientsToday();
+  $('#patList').innerHTML = Object.keys(m).map(k => `<option value="${esc(m[k].fio)}">${esc([m[k].year, m[k].dept].filter(Boolean).join(' · '))}</option>`).join('');
+}
+
 function bindForm() {
   const f = $('#qForm');
   const box = $('#svcBox');
+
+  f.fio.addEventListener('change', () => {
+    const p = patientsToday()[f.fio.value.trim().toLowerCase()];
+    if (!p) return;
+    if (!f.year.value) f.year.value = p.year;
+    if (!f.phone.value) f.phone.value = p.phone;
+  });
 
   box.addEventListener('input', e => {
     const row = e.target.closest('.svc');
@@ -1149,6 +1193,7 @@ async function loadDebts(quiet) {
     persist();
     renderDebts();
   } catch (e) {
+    if (e.auth) return relogin(e.message);
     if (quiet) return;
     if (DB.debts) toast(e.message, true);
     else $('#dTable').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`;
@@ -1251,7 +1296,7 @@ function bindReport() {
   $('#pRefresh').onclick = () => loadReport(true);
   $('#pPrint').onclick = () => { if (S.report) doPrint('report'); };
   try {
-    const r = JSON.parse(sess.get('rep') || 'null');
+    const r = JSON.parse(store.get('rep') || 'null');
     if (r && r.all && r.all.days) { REP.all = r.all; REP.at = r.at || 0; }
   } catch (e) {}
 }
@@ -1314,7 +1359,7 @@ async function loadReport(force) {
   try {
     const j = await api('reportAll');
     REP.all = j.report; REP.at = Date.now();
-    sess.set('rep', JSON.stringify(REP));
+    store.set('rep', JSON.stringify(REP));
     showReport();
   } catch (e) {
     if (REP.all) toast(e.message, true);
