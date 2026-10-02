@@ -1396,12 +1396,15 @@ async function loadReport(force) {
   repBusy = true;
   busy($('#pRefresh'), true);
   try {
-    const j = await api('reportAll');
+    // Жавобда ҳисобот бўлмаса (сервер бўш жавоб қайтарса) — бир марта қайта сўраймиз
+    let j = await api('reportAll');
+    if (!j.report || !j.report.days) j = await api('reportAll');
+    if (!j.report || !j.report.days) throw new Error('Сервер ҳисоботни қайтармади — яна бир марта «Янгилаш»ни босинг');
     REP.all = j.report; REP.at = Date.now();
     store.set('rep', JSON.stringify(REP));
     showReport();
     // Ҳисобот сайтдаги маълумотдан янгироқ бўлса — сайтни ҳам тенглаштирамиз (акс ҳолда «янги ёзувлар бор» ёзуви кетмайди)
-    if (REP.all.ver !== DB.ver) sync(true).then(repLabel);
+    if (REP.all && REP.all.ver !== DB.ver) sync(true).then(() => repLabel());
   } catch (e) {
     if (REP.all) toast(e.message, true);
     else $('#pBody').innerHTML = `<p class="err pad">${esc(e.message)}</p>`;
