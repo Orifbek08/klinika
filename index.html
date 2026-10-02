@@ -4,119 +4,168 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Клиника</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
   <style id="pageStyle">@page { size: 80mm auto; margin: 0; }</style>
 </head>
 <body>
 
-<!-- КИРИШ -->
-<div id="login" class="screen">
-  <div class="login-box card">
-    <div class="logo">✚</div>
+<!-- ============ КИРИШ ============ -->
+<div id="login" class="login">
+  <div class="login-card">
+    <div class="mark">✚</div>
     <h1>Клиника</h1>
-    <p class="muted">Тизимга кириш</p>
+    <p class="muted">Тизимга кириш учун PIN-кодни киритинг</p>
 
     <div id="urlBox" class="hidden">
-      <label>API манзили (Apps Script URL)
+      <label class="f">API манзили (Apps Script URL)
         <input id="apiUrl" placeholder="https://script.google.com/macros/s/.../exec">
       </label>
     </div>
 
-    <label>PIN-код
-      <input id="pin" type="password" inputmode="numeric" autocomplete="off">
+    <label class="f">PIN-код
+      <input id="pin" type="password" inputmode="numeric" autocomplete="off" class="pin">
     </label>
-    <button id="loginBtn" class="btn primary wide">Кириш</button>
+    <button id="loginBtn" class="btn primary big wide">Кириш</button>
     <p id="loginErr" class="err"></p>
-    <a href="#" id="changeUrl" class="small">API манзилини ўзгартириш</a>
+    <a href="#" id="changeUrl" class="link">API манзилини ўзгартириш</a>
   </div>
 </div>
 
-<!-- ИЛОВА -->
-<div id="app" class="hidden">
-  <header>
-    <div class="brand"><span class="logo sm">✚</span> <span id="brand">Клиника</span></div>
-    <nav>
-      <button class="tab active" data-view="qabul">Қабул</button>
-      <button class="tab" data-view="royxat">Рўйхат</button>
-      <button class="tab admin-only" data-view="panel">Бошқарув панели</button>
+<!-- ============ ИЛОВА ============ -->
+<div id="app" class="shell hidden">
+  <aside class="side">
+    <div class="brand"><span class="mark sm">✚</span><span id="brand">Клиника</span></div>
+    <nav id="nav">
+      <button class="nav on" data-view="qabul"><i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></i><span>Қабул</span></button>
+      <button class="nav" data-view="royxat"><i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg></i><span>Рўйхат</span></button>
+      <button class="nav" data-view="yotoq"><i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18v-8m0 5h18m0 3v-5a3 3 0 0 0-3-3h-7v5"/><circle cx="7" cy="11" r="1.6"/></svg></i><span>Ётоқхона</span><b id="nYotoq" class="pill hidden"></b></button>
+      <button class="nav" data-view="qarz"><i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></i><span>Қарзлар</span><b id="nQarz" class="pill warn hidden"></b></button>
+      <button class="nav admin-only" data-view="hisobot"><i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 20V10m7 10V4m7 16v-7"/></svg></i><span>Ҳисобот</span></button>
     </nav>
-    <div class="user"><span id="userName"></span><button id="logout" class="btn ghost sm">Чиқиш</button></div>
-  </header>
+    <div class="side-foot">
+      <div class="who"><b id="userName"></b><span id="userRole"></span></div>
+      <button id="logout" class="btn ghost sm">Чиқиш</button>
+    </div>
+  </aside>
 
-  <main>
+  <main class="main">
+
     <!-- ҚАБУЛ -->
     <section id="v-qabul" class="view">
-      <h2>Бўлимни танланг</h2>
+      <header class="page-head">
+        <div><h2>Қабул</h2><p class="muted">Бўлимни танланг, беморни ёзинг — навбат рақами ва чек чиқади</p></div>
+      </header>
       <div id="deptGrid" class="dept-grid"></div>
 
-      <form id="qForm" class="card hidden" autocomplete="off">
-        <div class="form-head">
-          <h3 id="fTitle"></h3>
-          <button type="button" id="closeForm" class="btn ghost sm">Ёпиш</button>
+      <form id="qForm" class="visit hidden" autocomplete="off">
+        <div class="card">
+          <div class="card-head">
+            <h3 id="fTitle"></h3>
+            <button type="button" id="closeForm" class="btn ghost sm">Ёпиш</button>
+          </div>
+          <div class="grid g4">
+            <label class="f span2">Ф.И.Ш *<input name="fio"></label>
+            <label class="f">Туғилган йил<input name="year" inputmode="numeric" maxlength="4"></label>
+            <label class="f">Телефон<input name="phone" inputmode="tel" placeholder="90 123 45 67"></label>
+            <label class="f span2">Доктор<select name="doctor"></select></label>
+            <label class="f span2">Юборган доктор<input name="referrer" list="docList" placeholder="Ким юборди"></label>
+          </div>
+          <div id="extraBox" class="grid g3"></div>
+
+          <h4>Хизматлар</h4>
+          <div class="svc-head"><span>Хизмат</span><span>Сони</span><span>Нарх</span><span></span></div>
+          <div id="svcBox" class="svc-list"></div>
+          <button type="button" id="addCustom" class="btn ghost sm">+ Бошқа хизмат</button>
         </div>
 
-        <div class="grid">
-          <label class="span2">Ф.И.Ш *<input name="fio"></label>
-          <label>Туғилган йил<input name="year" inputmode="numeric" maxlength="4"></label>
-          <label>Телефон<input name="phone" inputmode="tel"></label>
-          <label>Доктор<select name="doctor"></select></label>
-          <label>Юборган доктор<input name="referrer" list="docList" placeholder="Ким юборди"></label>
-        </div>
-
-        <div id="extraBox" class="grid"></div>
-
-        <h4>Хизматлар</h4>
-        <div class="svc-head"><span>Хизмат</span><span>Сони</span><span>Нарх</span></div>
-        <div id="svcBox" class="svc-list"></div>
-        <button type="button" id="addCustom" class="btn ghost sm">+ Бошқа хизмат</button>
-
-        <div class="grid total-row">
-          <label>Тўлов тури<select name="payment"></select></label>
-          <label>Жами сумма (сўм)<input name="sum" inputmode="numeric" class="sum-input"></label>
-          <label class="span2">Изоҳ<input name="note"></label>
-        </div>
-
-        <div class="actions">
-          <button type="submit" class="btn primary big">Сақлаш ва чек чиқариш</button>
-        </div>
+        <aside class="card bill">
+          <h3>Ҳисоб</h3>
+          <label class="f">Жами сумма, сўм<input name="sum" inputmode="numeric" class="money sum-total"></label>
+          <div class="f"><span>Тўлов тури</span><div id="qPay" class="seg"></div></div>
+          <label class="f">Тўланди, сўм<input name="paid" inputmode="numeric" class="money"></label>
+          <div class="quick">
+            <button type="button" id="payFull" class="btn sm">Тўлиқ</button>
+            <button type="button" id="payNone" class="btn sm">Қарзга</button>
+          </div>
+          <div id="debtLine" class="debt-line hidden">Қарз: <b></b></div>
+          <label class="f">Изоҳ<input name="note"></label>
+          <button type="submit" class="btn primary big wide">Сақлаш ва чек</button>
+        </aside>
       </form>
       <datalist id="docList"></datalist>
     </section>
 
     <!-- РЎЙХАТ -->
     <section id="v-royxat" class="view hidden">
-      <div class="toolbar">
-        <select id="lDept"></select>
-        <input type="date" id="lDate">
-        <label class="chk hidden" id="lActiveWrap"><input type="checkbox" id="lActive"> Ҳозир ётганлар</label>
-        <button id="lLoad" class="btn">Янгилаш</button>
-      </div>
-      <div id="lSummary" class="summary"></div>
-      <div class="table-wrap card"><table id="lTable"></table></div>
+      <header class="page-head">
+        <div><h2>Рўйхат</h2><p class="muted">Кунлик қабуллар</p></div>
+        <div class="tools">
+          <select id="lDept"></select>
+          <input type="date" id="lDate">
+          <button id="lLoad" class="btn">Янгилаш</button>
+        </div>
+      </header>
+      <div id="lStats" class="stats"></div>
+      <div class="card flush"><div class="table-wrap"><table id="lTable"></table></div></div>
     </section>
 
-    <!-- БОШҚАРУВ ПАНЕЛИ -->
-    <section id="v-panel" class="view hidden">
-      <div class="toolbar">
-        <button class="btn sm range" data-range="today">Бугун</button>
-        <button class="btn sm range" data-range="yesterday">Кеча</button>
-        <button class="btn sm range" data-range="month">Шу ой</button>
-        <button class="btn sm range" data-range="lastmonth">Ўтган ой</button>
-        <input type="date" id="pFrom"> <span>—</span> <input type="date" id="pTo">
-        <button id="pLoad" class="btn primary">Кўрсатиш</button>
-      </div>
-      <div id="pCards" class="cards"></div>
-      <div class="two">
-        <div class="card"><h3>Бўлимлар</h3><div class="table-wrap"><table id="pDepts"></table></div></div>
-        <div class="card"><h3>Докторлар</h3><div class="table-wrap"><table id="pDocs"></table></div></div>
-      </div>
-      <div class="two">
-        <div class="card"><h3>Юборган докторлар</h3><div class="table-wrap"><table id="pRefs"></table></div></div>
-        <div class="card"><h3>Кунлар бўйича тушум</h3><div id="pDays"></div></div>
-      </div>
+    <!-- ЁТОҚХОНА -->
+    <section id="v-yotoq" class="view hidden">
+      <header class="page-head">
+        <div><h2>Ётоқхона</h2><p class="muted">Ётган беморлар, кунлик муолажалар ва ҳисоб-китоб</p></div>
+        <div class="tools">
+          <div id="yMode" class="seg">
+            <button type="button" class="on" data-v="active">Ётганлар</button>
+            <button type="button" data-v="done">Кетганлар</button>
+          </div>
+          <button id="yAdmit" class="btn primary">+ Бемор қабул қилиш</button>
+        </div>
+      </header>
+      <div id="yStats" class="stats"></div>
+      <div id="yGrid" class="stay-grid"></div>
     </section>
+
+    <!-- ҚАРЗЛАР -->
+    <section id="v-qarz" class="view hidden">
+      <header class="page-head">
+        <div><h2>Қарзлар</h2><p class="muted">Тўлиқ тўланмаган қабуллар</p></div>
+        <div class="tools">
+          <input id="dSearch" placeholder="Исм ёки телефон бўйича қидириш" class="search">
+          <button id="dLoad" class="btn">Янгилаш</button>
+        </div>
+      </header>
+      <div id="dStats" class="stats"></div>
+      <div class="card flush"><div class="table-wrap"><table id="dTable"></table></div></div>
+    </section>
+
+    <!-- ҲИСОБОТ -->
+    <section id="v-hisobot" class="view hidden">
+      <header class="page-head">
+        <div><h2>Ҳисобот</h2><p class="muted" id="pPeriod"></p></div>
+        <div class="tools no-print">
+          <div class="seg" id="pRange">
+            <button type="button" data-v="today" class="on">Бугун</button>
+            <button type="button" data-v="yesterday">Кеча</button>
+            <button type="button" data-v="week">7 кун</button>
+            <button type="button" data-v="month">Шу ой</button>
+            <button type="button" data-v="lastmonth">Ўтган ой</button>
+          </div>
+          <input type="date" id="pFrom"><span class="muted">—</span><input type="date" id="pTo">
+          <button id="pLoad" class="btn primary">Кўрсатиш</button>
+          <button id="pPrint" class="btn">Чоп этиш</button>
+        </div>
+      </header>
+      <div id="pBody"></div>
+    </section>
+
   </main>
 </div>
+
+<!-- Модал ойна -->
+<div id="overlay" class="overlay hidden"><div id="sheet" class="sheet"></div></div>
 
 <div id="receipt"></div>
 <div id="toast"></div>
