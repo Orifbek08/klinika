@@ -7,7 +7,7 @@
  ******************************************************/
 
 const TZ = 'Asia/Tashkent';
-const SCHEMA = '2';
+const SCHEMA = '3';
 const YOTOQ = 'yotoq';
 const S_PAY = 'Тўловлар';
 const S_CHG = 'Ётоқ хизматлари';
@@ -33,7 +33,8 @@ const DEPTS = [
       { h: 'Келган соат', t: 'time' },
       { h: 'Кетган сана', t: 'date' },
       { h: 'Ётоқ тури',   t: 'text' },
-      { h: 'Кунлик нарх', t: 'num' } ] }
+      { h: 'Кунлик нарх', t: 'num' },
+      { h: 'Муолажалар суммаси', t: 'num' } ] }
 ];
 
 const COMMON = ['ID', 'Сана', 'Вақт', 'Навбат №', 'Ф.И.Ш', 'Туғилган йил', 'Телефон',
@@ -80,11 +81,13 @@ const SEED_DOCTORS = [
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('Клиника')
     .addItem('Ўрнатиш / янгилаш (варақлар)', 'setup')
+    .addItem('Нарх ва созламаларни қайта ўқиш', 'clearCache_')
     .addToUi();
 }
 
 function setup() {
   build_();
+  clearCache_();
   try { PropertiesService.getScriptProperties().setProperty('schema', SCHEMA); } catch (e) {}
   try { SpreadsheetApp.getUi().alert('Тайёр! Варақлар яратилди / янгиланди.'); } catch (e) {}
 }
@@ -95,7 +98,16 @@ function migrate_() {
   try { p = PropertiesService.getScriptProperties(); } catch (e) {}
   if (p && p.getProperty('schema') === SCHEMA) return;
   build_();
+  clearCache_();
+  resyncStays_();
   if (p) p.setProperty('schema', SCHEMA);
+}
+
+// Эски вариантда ёзилган ётоқ ёзувларининг йиғиндиларини янгилайди.
+function resyncStays_() {
+  try {
+    readAll_('Ётоқхона').rows.forEach(o => { if (o['Ҳолат'] !== 'Бекор') staySync_(o['ID']); });
+  } catch (e) {}
 }
 
 function build_() {
@@ -294,10 +306,14 @@ function appendObj_(sh, head, rec) {
 }
 
 function setCells_(sh, head, row, obj) {
+  const rg = sh.getRange(row, 1, 1, head.length);
+  const v = rg.getValues()[0];
+  let hit = false;
   Object.keys(obj).forEach(k => {
     const c = head.indexOf(k);
-    if (c >= 0) sh.getRange(row, c + 1).setValue(obj[k]);
+    if (c >= 0) { v[c] = obj[k]; hit = true; }
   });
+  if (hit) rg.setValues([v]);
 }
 
 function normDate_(v) { return v instanceof Date ? fmt_(v, 'yyyy-MM-dd') : String(v || '').trim(); }
@@ -309,15 +325,96 @@ function days_(a, b) {
   return Math.max(1, d);
 }
 
+/* ---------- Кеш (нарх, доктор, фойдаланувчи) ---------- */
+function cached_(key, ttl, fn) {
+  let c = null;
+  try {
+    c = CacheService.getScriptCache();
+    const v = c.get(key);
+    if (v) return JSON.parse(v);
+  } catch (e) {}
+  const val = fn();
+  try { if (c) c.put(key, JSON.stringify(val), ttl); } catch (e) {}
+  return val;
+}
+
+function clearCache_() {
+  try { CacheService.getScriptCache().removeAll(['cfg', 'users']); } catch (e) {}
+}
+
+// Созлама варақлари қўлда ўзгартирилса, кеш дарҳол тозаланади.
+function onEdit(e) {
+  try {
+    const n = e.range.getSheet().getName();
+    if (['Созламалар', 'Фойдаланувчилар', 'Хизматлар', 'Докторлар'].indexOf(n) >= 0) clearCache_();
+  } catch (x) {}
+}
+
+/* ---------- Тез қидириш (бутун варақни ўқимасдан) ---------- */
+function findById_(name, id) {
+  const sh = sh_(name);
+  const head = head_(sh);
+  const n = sh.getLastRow() - 1;
+  if (n < 1) return null;
+  const cell = sh.getRange(2, 1, n, 1).createTextFinder(String(id)).matchEntireCell(true).findNext();
+  if (!cell) return null;
+  const r = cell.getRow();
+  const o = obj_(head, sh.getRange(r, 1, 1, head.length).getValues()[0]);
+  o._row = r;
+  return { sh: sh, head: head, row: o };
+}
+
+function findRows_(name, colName, value) {
+  const sh = sh_(name);
+  const head = head_(sh);
+  const c = head.indexOf(colName);
+  const n = sh.getLastRow() - 1;
+  if (c < 0 || n < 1) return { sh: sh, head: head, rows: [] };
+  const hits = sh.getRange(2, c + 1, n, 1).createTextFinder(String(value)).matchEntireCell(true).findAll().map(x => x.getRow());
+  return { sh: sh, head: head, rows: pick_(sh, head, hits) };
+}
+
+// Берилган қаторларни битта ўқиш билан олади.
+function pick_(sh, head, rowNums) {
+  if (!rowNums.length) return [];
+  const lo = Math.min.apply(null, rowNums), hi = Math.max.apply(null, rowNums);
+  const v = sh.getRange(lo, 1, hi - lo + 1, head.length).getValues();
+  return rowNums.slice().sort((a, b) => a - b).map(r => {
+    const o = obj_(head, v[r - lo]);
+    o._row = r;
+    return o;
+  }).filter(o => o['ID']);
+}
+
+// Варақни пастдан юқорига бўлаклаб ўқийди (янги ёзувлар пастда).
+function tail_(name, keep, stop) {
+  const sh = sh_(name);
+  const head = head_(sh);
+  const out = [];
+  let end = sh.getLastRow();
+  while (end >= 2) {
+    const start = Math.max(2, end - 399);
+    const v = sh.getRange(start, 1, end - start + 1, head.length).getValues();
+    let done = false;
+    for (let i = v.length - 1; i >= 0; i--) {
+      const o = obj_(head, v[i]);
+      if (!o['ID']) continue;
+      if (stop(o)) { done = true; break; }
+      if (keep(o)) { o._row = start + i; out.push(o); }
+    }
+    if (done) break;
+    end = start - 1;
+  }
+  return out;
+}
+
 function auth_(pin) {
   if (!pin) return null;
-  const v = sh_('Фойдаланувчилар').getDataRange().getDisplayValues();
-  for (let i = 1; i < v.length; i++) {
-    if (String(v[i][1]).trim() !== '' && String(v[i][1]).trim() === String(pin).trim()) {
-      return { name: String(v[i][0]), role: String(v[i][2]).trim().toLowerCase() };
-    }
-  }
-  return null;
+  const users = cached_('users', 300, () => sh_('Фойдаланувчилар').getDataRange().getDisplayValues().slice(1)
+    .map(r => [String(r[0]), String(r[1]).trim(), String(r[2]).trim().toLowerCase()])
+    .filter(r => r[1] !== ''));
+  const u = users.find(r => r[1] === String(pin).trim());
+  return u ? { name: u[0] || 'Оператор', role: u[2] || 'оператор' } : null;
 }
 
 function settings_() {
@@ -326,7 +423,9 @@ function settings_() {
   return s;
 }
 
-function config_() {
+function config_() { return cached_('cfg', 300, configRead_); }
+
+function configRead_() {
   const s = settings_();
   return {
     clinic: s['Клиника номи'] || 'Клиника',
@@ -342,10 +441,9 @@ function config_() {
 
 function doctorShare_(name, deptName) {
   if (!name) return 0;
-  const docs = rows_('Докторлар');
-  const hit = docs.find(r => String(r[0]).trim() === name && String(r[1]).trim() === deptName)
-           || docs.find(r => String(r[0]).trim() === name);
-  return hit ? (Number(hit[2]) || 0) : 0;
+  const docs = config_().doctors;
+  const hit = docs.find(r => r.name === name && r.dept === deptName) || docs.find(r => r.name === name);
+  return hit ? hit.share : 0;
 }
 
 /* ================= НАВБАТ ================= */
@@ -391,11 +489,9 @@ function addPay_(deptName, recId, fio, amount, payType, kind, user, now) {
 }
 
 function cancelPays_(recId) {
-  const t = readAll_(S_PAY);
+  const t = findRows_(S_PAY, 'Ёзув ID', recId);
   t.rows.forEach(p => {
-    if (String(p['Ёзув ID']) === String(recId) && p['Ҳолат'] !== 'Бекор') {
-      setCells_(t.sh, t.head, p._row, { 'Ҳолат': 'Бекор' });
-    }
+    if (p['Ҳолат'] !== 'Бекор') setCells_(t.sh, t.head, p._row, { 'Ҳолат': 'Бекор' });
   });
 }
 
@@ -451,34 +547,33 @@ function add_(key, data, user) {
 
 function list_(key, date) {
   const d = dept_(key);
-  return readAll_(d.name).rows.filter(o => o['Сана'] === date).map(strip_).reverse();
+  return tail_(d.name, o => o['Сана'] === date, o => !!o['Сана'] && String(o['Сана']) < String(date)).map(strip_);
 }
 
 function cancel_(key, id, user, reason) {
   const d = dept_(key);
-  const t = readAll_(d.name);
-  const row = t.rows.find(o => String(o['ID']) === String(id));
-  if (!row) throw new Error('Ёзув топилмади');
+  const f = findById_(d.name, id);
+  if (!f) throw new Error('Ёзув топилмади');
+  const row = f.row;
   if (row['Ҳолат'] === 'Бекор') throw new Error('Аллақачон бекор қилинган');
   if (user.role !== 'админ' && row['Сана'] !== today_()) {
     throw new Error('Эски ёзувни фақат админ бекор қила олади');
   }
   const note = [row['Изоҳ'], 'Бекор: ' + user.name + (reason ? ' — ' + reason : '')]
     .filter(x => String(x || '').trim()).join(' | ');
-  setCells_(t.sh, t.head, row._row, { 'Ҳолат': 'Бекор', 'Қарз': 0, 'Изоҳ': note });
+  setCells_(f.sh, f.head, row._row, { 'Ҳолат': 'Бекор', 'Қарз': 0, 'Изоҳ': note });
   cancelPays_(id);
   return { id: id };
 }
 
 function setField_(key, id, field, value) {
   const d = dept_(key);
-  const f = d.extra.find(x => x.h === field && x.t === 'date');
-  if (!f || d.key === YOTOQ) throw new Error('Бу майдонни ўзгартириб бўлмайди');
-  const t = readAll_(d.name);
-  const row = t.rows.find(o => String(o['ID']) === String(id));
-  if (!row) throw new Error('Ёзув топилмади');
+  const x = d.extra.find(e => e.h === field && e.t === 'date');
+  if (!x || d.key === YOTOQ) throw new Error('Бу майдонни ўзгартириб бўлмайди');
+  const f = findById_(d.name, id);
+  if (!f) throw new Error('Ёзув топилмади');
   const o = {}; o[field] = String(value || '');
-  setCells_(t.sh, t.head, row._row, o);
+  setCells_(f.sh, f.head, f.row._row, o);
   return { id: id };
 }
 
@@ -490,7 +585,15 @@ function debts_() {
   DEPTS.forEach(d => {
     const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(d.name);
     if (!sh) return;
-    readAll_(d.name).rows.forEach(o => {
+    const head = head_(sh);
+    const c = head.indexOf('Қарз');
+    const n = sh.getLastRow() - 1;
+    if (c < 0 || n < 1) return;
+    // Фақат «Қарз» устуни ўқилади, кейин қарзи бор қаторлар олинади
+    const col = sh.getRange(2, c + 1, n, 1).getValues();
+    const hits = [];
+    for (let i = 0; i < col.length; i++) if (n_(col[i][0]) > 0) hits.push(i + 2);
+    pick_(sh, head, hits).forEach(o => {
       const debt = n_(o['Қарз']);
       if (o['Ҳолат'] === 'Бекор' || !(debt > 0)) return;
       if (d.key === YOTOQ && stayActive_(o)) return; // ётган бемор ҳали ҳисоб-китоб қилмаган
@@ -509,9 +612,9 @@ function debts_() {
 
 function payDebt_(key, id, amount, payType, user) {
   const d = dept_(key);
-  const t = readAll_(d.name);
-  const row = t.rows.find(o => String(o['ID']) === String(id));
-  if (!row) throw new Error('Ёзув топилмади');
+  const f = findById_(d.name, id);
+  if (!f) throw new Error('Ёзув топилмади');
+  const row = f.row;
   if (row['Ҳолат'] === 'Бекор') throw new Error('Ёзув бекор қилинган');
   if (d.key === YOTOQ && stayActive_(row)) throw new Error('Бемор ҳали ётибди — тўловни «Ётоқхона» бўлимидан киритинг');
   const debt = n_(row['Қарз']);
@@ -519,7 +622,7 @@ function payDebt_(key, id, amount, payType, user) {
   if (!(amount > 0)) throw new Error('Сумма киритилмаган');
   if (amount > debt) throw new Error('Сумма қарздан катта (қарз: ' + debt + ')');
   const paid = n_(row['Тўланган']) + amount;
-  setCells_(t.sh, t.head, row._row, { 'Тўланган': paid, 'Қарз': debt - amount });
+  setCells_(f.sh, f.head, row._row, { 'Тўланган': paid, 'Қарз': debt - amount });
   const p = addPay_(d.name, id, row['Ф.И.Ш'], amount, payType, 'Қарз тўлови', user, new Date());
   return { pay: p, dept: d.name, fio: row['Ф.И.Ш'], sum: n_(row['Сумма']), paid: paid, left: debt - amount };
 }
@@ -530,79 +633,70 @@ function stayActive_(o) {
   return o['Ҳолат'] !== 'Бекор' && o['Ҳолат'] !== 'Кетди' && !o['Кетган сана'];
 }
 
-function stayCtx_() {
-  const t = readAll_('Ётоқхона');
-  const chBy = {}, pyBy = {};
-  readAll_(S_CHG).rows.forEach(c => {
-    if (c['Ҳолат'] === 'Бекор') return;
-    (chBy[c['Ётиш ID']] = chBy[c['Ётиш ID']] || []).push(strip_(c));
-  });
-  readAll_(S_PAY).rows.forEach(p => {
-    if (p['Ҳолат'] === 'Бекор' || p['Бўлим'] !== 'Ётоқхона') return;
-    (pyBy[p['Ёзув ID']] = pyBy[p['Ёзув ID']] || []).push(strip_(p));
-  });
-  return { t: t, chBy: chBy, pyBy: pyBy };
+function stayGet_(id) {
+  const f = findById_('Ётоқхона', id);
+  if (!f) throw new Error('Бемор топилмади');
+  return f;
 }
 
-function stayView_(o, ctx, withLines) {
-  const ch = ctx.chBy[o['ID']] || [], py = ctx.pyBy[o['ID']] || [];
+// lines берилса — аниқ ҳисоб (муолажа ва тўловлардан), берилмаса — вараққа ёзилган йиғиндилардан.
+function stayView_(o, lines) {
   const active = stayActive_(o);
   const arrive = o['Келган сана'] || o['Сана'];
   const days = days_(arrive, o['Кетган сана'] || today_());
   const rate = n_(o['Кунлик нарх']);
   const bed = days * rate;
-  const svc = ch.reduce((s, c) => s + n_(c['Сумма']), 0);
-  const paid = py.reduce((s, p) => s + n_(p['Сумма']), 0);
+  const svc = lines ? lines.ch.reduce((s, c) => s + n_(c['Сумма']), 0) : n_(o['Муолажалар суммаси']);
+  const paid = lines ? lines.py.reduce((s, p) => s + n_(p['Сумма']), 0) : n_(o['Тўланган']);
   const total = bed + svc;
   const v = {
     stay: strip_(o),
     calc: { active: active, days: days, rate: rate, bed: bed, svc: svc, total: total, paid: paid, balance: total - paid }
   };
-  if (withLines) {
-    v.charges = ch.slice().sort((a, b) => String(a['Сана']).localeCompare(String(b['Сана'])));
-    v.payments = py;
+  if (lines) {
+    v.charges = lines.ch.slice().sort((a, b) => String(a['Сана']).localeCompare(String(b['Сана'])));
+    v.payments = lines.py;
   }
   return v;
 }
 
-function stayRow_(ctx, id) {
-  const o = ctx.t.rows.find(r => String(r['ID']) === String(id));
-  if (!o) throw new Error('Бемор топилмади');
-  return o;
+function stayLines_(id) {
+  return {
+    ch: findRows_(S_CHG, 'Ётиш ID', id).rows.filter(c => c['Ҳолат'] !== 'Бекор').map(strip_),
+    py: findRows_(S_PAY, 'Ёзув ID', id).rows.filter(p => p['Ҳолат'] !== 'Бекор').map(strip_)
+  };
 }
 
 function stayDetail_(id) {
-  const ctx = stayCtx_();
-  return stayView_(stayRow_(ctx, id), ctx, true);
+  return stayView_(stayGet_(id).row, stayLines_(id));
 }
 
-// Ҳисобни қайта ҳисоблаб, вараққа ёзади.
-function staySync_(id) {
-  const ctx = stayCtx_();
-  const o = stayRow_(ctx, id);
-  const v = stayView_(o, ctx, true);
+// Ҳисобни қайта ҳисоблаб, вараққа ёзади (extra — шу билан бирга ёзиладиган майдонлар).
+function staySync_(id, extra) {
+  const f = stayGet_(id);
+  if (extra) Object.assign(f.row, extra);
+  const v = stayView_(f.row, stayLines_(id));
   const names = [];
   v.charges.forEach(c => { if (names.indexOf(c['Хизмат']) < 0) names.push(c['Хизмат']); });
-  const upd = {
+  const upd = Object.assign({}, extra || {}, {
     'Сумма': v.calc.total,
     'Тўланган': v.calc.paid,
     'Қарз': Math.max(0, v.calc.balance),
+    'Муолажалар суммаси': v.calc.svc,
     'Хизматлар': ['Ётоқ ' + v.calc.days + ' кун'].concat(names.slice(0, 8)).join(', ')
-  };
-  setCells_(ctx.t.sh, ctx.t.head, o._row, upd);
+  });
+  setCells_(f.sh, f.head, f.row._row, upd);
   Object.assign(v.stay, upd);
   return v;
 }
 
 function stays_(mode) {
-  const ctx = stayCtx_();
   const rows = [];
   const stats = { count: 0, total: 0, paid: 0, balance: 0 };
-  ctx.t.rows.forEach(o => {
+  readAll_('Ётоқхона').rows.forEach(o => {
     if (o['Ҳолат'] === 'Бекор') return;
-    const act = stayActive_(o);
-    if ((mode === 'done') === act) return;
-    const v = stayView_(o, ctx, false);
+    if ((mode === 'done') === stayActive_(o)) return;
+    const v = stayView_(o, null);
     rows.push(v);
     stats.count++; stats.total += v.calc.total; stats.paid += v.calc.paid; stats.balance += v.calc.balance;
   });
@@ -622,26 +716,30 @@ function stayAdmit_(data, user) {
   const date = fmt_(now, 'yyyy-MM-dd');
   const no = nextNo_(d, date);
   const id = d.key + '-' + stamp_(now) + '-' + no;
+  const rate = Math.max(0, Math.round(n_(data.rate)));
+  const prepay = Math.max(0, Math.round(n_(data.prepay)));
+  const arrive = data.arrive || date;
+  const total = days_(arrive, date) * rate;
   const rec = {
     'ID': id, 'Сана': date, 'Вақт': fmt_(now, 'HH:mm'), 'Навбат №': no,
     'Ф.И.Ш': fio, 'Туғилган йил': String(data.year || ''), 'Телефон': String(data.phone || ''),
-    'Хизматлар': '', 'Сумма': 0, 'Тўлов тури': '',
+    'Хизматлар': '', 'Сумма': total, 'Тўлов тури': '',
     'Доктор': data.doctor || '', 'Доктор улуши': 0, 'Юборган доктор': data.referrer || '',
     'Ҳолат': 'Ётибди', 'Оператор': user.name, 'Изоҳ': data.note || '',
-    'Тўланган': 0, 'Қарз': 0,
-    'Келган сана': data.arrive || date, 'Келган соат': data.arriveTime || fmt_(now, 'HH:mm'),
-    'Кетган сана': '', 'Ётоқ тури': data.room || '', 'Кунлик нарх': Math.max(0, Math.round(n_(data.rate)))
+    'Тўланган': prepay, 'Қарз': Math.max(0, total - prepay),
+    'Келган сана': arrive, 'Келган соат': data.arriveTime || fmt_(now, 'HH:mm'),
+    'Кетган сана': '', 'Ётоқ тури': data.room || '', 'Кунлик нарх': rate, 'Муолажалар суммаси': 0
   };
   const sh = sh_(d.name);
   appendObj_(sh, head_(sh), rec);
-  addPay_(d.name, id, fio, data.prepay, data.payment, 'Аванс', user, now);
-  return staySync_(id);
+  const p = addPay_(d.name, id, fio, prepay, data.payment, 'Аванс', user, now);
+  return stayView_(rec, { ch: [], py: p ? [p] : [] });
 }
 
 function stayNeedActive_(id) {
-  const o = stayRow_(stayCtx_(), id);
-  if (!stayActive_(o)) throw new Error('Бемор аллақачон кетган ёки ёзув бекор қилинган');
-  return o;
+  const f = stayGet_(id);
+  if (!stayActive_(f.row)) throw new Error('Бемор аллақачон кетган ёки ёзув бекор қилинган');
+  return f.row;
 }
 
 function stayCharge_(id, date, items, user) {
@@ -668,12 +766,11 @@ function stayCharge_(id, date, items, user) {
 }
 
 function stayChargeCancel_(chargeId) {
-  const t = readAll_(S_CHG);
-  const c = t.rows.find(r => String(r['ID']) === String(chargeId));
-  if (!c) throw new Error('Хизмат топилмади');
-  stayNeedActive_(c['Ётиш ID']);
-  setCells_(t.sh, t.head, c._row, { 'Ҳолат': 'Бекор' });
-  return staySync_(c['Ётиш ID']);
+  const f = findById_(S_CHG, chargeId);
+  if (!f) throw new Error('Хизмат топилмади');
+  stayNeedActive_(f.row['Ётиш ID']);
+  setCells_(f.sh, f.head, f.row._row, { 'Ҳолат': 'Бекор' });
+  return staySync_(f.row['Ётиш ID']);
 }
 
 function stayPay_(id, amount, payType, user) {
@@ -684,29 +781,24 @@ function stayPay_(id, amount, payType, user) {
 }
 
 function stayEdit_(id, data) {
-  const ctx = stayCtx_();
-  const o = stayRow_(ctx, id);
-  if (!stayActive_(o)) throw new Error('Фақат ётган бемор маълумотини ўзгартириш мумкин');
+  stayNeedActive_(id);
   const upd = {};
   if (data.room !== undefined) upd['Ётоқ тури'] = String(data.room || '');
   if (data.rate !== undefined) upd['Кунлик нарх'] = Math.max(0, Math.round(n_(data.rate)));
   if (data.arrive) upd['Келган сана'] = String(data.arrive);
   if (data.note !== undefined) upd['Изоҳ'] = String(data.note || '');
-  setCells_(ctx.t.sh, ctx.t.head, o._row, upd);
-  return staySync_(id);
+  return staySync_(id, upd);
 }
 
 function stayDischarge_(id, data, user) {
-  const ctx = stayCtx_();
-  const o = stayRow_(ctx, id);
+  const o = stayGet_(id).row;
   if (!stayActive_(o)) throw new Error('Бемор аллақачон кетган');
   const leave = String(data.date || today_());
   if (leave < String(o['Келган сана'] || '')) throw new Error('Кетган сана келган санадан олдин бўлиши мумкин эмас');
   const upd = { 'Кетган сана': leave, 'Ҳолат': 'Кетди' };
   if (Math.round(n_(data.amount)) > 0) upd['Тўлов тури'] = data.payment || '';
-  setCells_(ctx.t.sh, ctx.t.head, o._row, upd);
   addPay_('Ётоқхона', o['ID'], o['Ф.И.Ш'], data.amount, data.payment, 'Ҳисоб-китоб', user, new Date());
-  return staySync_(id);
+  return staySync_(id, upd);
 }
 
 /* ================= ҲИСОБОТ ================= */

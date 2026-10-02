@@ -18,6 +18,8 @@ const sess = safe(() => sessionStorage);
 
 const YOTOQ = 'yotoq';
 const YOTOQ_NAME = 'Ётоқхона';
+const C = {}; // кеш: эски маълумот дарҳол кўрсатилади, янгиси орқа фонда келади
+let pending = 0, started = false;
 const S = { pin: null, user: null, cfg: null, dept: null, list: [], listDept: null,
   paidTouched: false, stayMode: 'active', stays: [], stay: null, debts: [], report: null };
 
@@ -41,20 +43,27 @@ function apiUrl() { return DEFAULT_API_URL || store.get('apiUrl') || ''; }
 async function api(action, payload) {
   const url = apiUrl();
   if (!url) throw new Error('API манзили киритилмаган');
-  let res;
+  pending++;
+  document.body.classList.add('syncing');
   try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(Object.assign({ action: action, pin: S.pin }, payload || {}))
-    });
-  } catch (e) {
-    throw new Error('Интернет ёки API билан алоқа йўқ');
+    let res;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(Object.assign({ action: action, pin: S.pin }, payload || {}))
+      });
+    } catch (e) {
+      throw new Error('Интернет ёки API билан алоқа йўқ');
+    }
+    let j;
+    try { j = await res.json(); } catch (e) { throw new Error('Сервер жавоби нотўғри (Apps Script «Anyone» қилиб deploy қилинганми?)'); }
+    if (!j.ok) throw new Error(j.error || 'Хатолик');
+    return j;
+  } finally {
+    pending--;
+    if (pending <= 0) { pending = 0; document.body.classList.remove('syncing'); }
   }
-  let j;
-  try { j = await res.json(); } catch (e) { throw new Error('Сервер жавоби нотўғри (Apps Script «Anyone» қилиб deploy қилинганми?)'); }
-  if (!j.ok) throw new Error(j.error || 'Хатолик');
-  return j;
 }
 
 function toast(msg, bad) {
@@ -122,8 +131,21 @@ function initLogin() {
   };
   $('#loginBtn').onclick = doLogin;
   $('#pin').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
   const saved = sess.get('pin');
-  if (saved && apiUrl()) { S.pin = saved; login(true); } else { $('#pin').focus(); }
+  if (saved && apiUrl()) {
+    S.pin = saved;
+    // Саҳифа янгиланганда сақланган созлама билан дарҳол очилади, сервердан орқа фонда текширилади
+    let boot = null;
+    try { boot = JSON.parse(sess.get('boot') || 'null'); } catch (e) {}
+    if (boot && boot.pin === saved && boot.user && boot.cfg) {
+      S.user = boot.user; S.cfg = boot.cfg;
+      if (enter()) { login(true, true); return; }
+    }
+    login(true);
+  } else {
+    $('#pin').focus();
+  }
 }
 
 function doLogin() {
@@ -134,50 +156,87 @@ function doLogin() {
   login(false);
 }
 
-async function login(silent) {
+async function login(silent, background) {
   const b = $('#loginBtn');
-  busy(b, true);
+  if (!background) busy(b, true);
   $('#loginErr').textContent = '';
   try {
     const j = await api('login');
+    if (!j.user || !j.config || !Array.isArray(j.config.depts)) {
+      throw new Error('Сервер жавоби тўлиқ эмас. Apps Script’га янги Code.gs қўйилиб, «New version» қилиб deploy қилинганини текширинг.');
+    }
     S.user = j.user;
     S.cfg = j.config;
     sess.set('pin', S.pin);
-    startApp();
+    sess.set('boot', JSON.stringify({ pin: S.pin, user: S.user, cfg: S.cfg }));
+    if (background) applyConfig(); else enter();
   } catch (e) {
-    sess.del('pin');
-    if (!silent) $('#loginErr').textContent = e.message;
+    if (background) {
+      if (/PIN/.test(e.message)) { sess.del('pin'); sess.del('boot'); location.reload(); }
+      return;
+    }
+    sess.del('pin'); sess.del('boot');
+    showLogin(silent ? '' : e.message);
   } finally {
-    busy(b, false);
+    if (!background) busy(b, false);
+  }
+}
+
+function showLogin(msg) {
+  $('#app').classList.add('hidden');
+  $('#login').classList.remove('hidden');
+  $('#loginErr').textContent = msg || '';
+}
+
+// Иловани очади; хато бўлса кириш ойнасига қайтариб, сабабини кўрсатади.
+function enter() {
+  try {
+    applyConfig();
+    if (!started) { startApp(); started = true; }
+    $('#login').classList.add('hidden');
+    $('#app').classList.remove('hidden');
+    return true;
+  } catch (e) {
+    console.error(e);
+    sess.del('boot');
+    showLogin('Иловани очишда хато: ' + e.message);
+    return false;
   }
 }
 
 /* ---------- Илова ---------- */
-function startApp() {
-  $('#login').classList.add('hidden');
-  $('#app').classList.remove('hidden');
+// Созламага боғлиқ ҳамма нарса (қайта чақирса бўлади)
+function applyConfig() {
   $('#brand').textContent = S.cfg.clinic;
   document.title = S.cfg.clinic;
-  $('#userName').textContent = S.user.name;
-  $('#userRole').textContent = S.user.role;
+  $('#userName').textContent = S.user.name || '';
+  $('#userRole').textContent = S.user.role || '';
   const admin = S.user.role === 'админ';
   $$('.admin-only').forEach(x => x.classList.toggle('hidden', !admin));
 
   const out = S.cfg.depts.filter(d => d.key !== YOTOQ);
+  const active = S.dept ? S.dept.key : '';
   $('#deptGrid').innerHTML = out
-    .map(d => `<button type="button" class="dept" data-key="${d.key}">${esc(d.name)}</button>`).join('') +
+    .map(d => `<button type="button" class="dept${d.key === active ? ' active' : ''}" data-key="${d.key}">${esc(d.name)}</button>`).join('') +
     `<button type="button" class="dept alt" data-go="yotoq">${YOTOQ_NAME} →</button>`;
-  $$('#deptGrid .dept').forEach(b => {
-    b.onclick = () => (b.dataset.go ? showView(b.dataset.go) : openForm(b.dataset.key));
-  });
 
+  const cur = $('#lDept').value;
   $('#lDept').innerHTML = out.map(d => `<option value="${d.key}">${esc(d.name)}</option>`).join('');
-  $('#lDate').value = today();
+  if (cur) $('#lDept').value = cur;
   $('#docList').innerHTML = uniq(S.cfg.doctors.map(d => d.name)).map(n => `<option value="${esc(n)}">`).join('');
-  $('#qPay').innerHTML = segHtml(S.cfg.payments);
+  if (!$('#qPay').children.length) $('#qPay').innerHTML = segHtml(S.cfg.payments);
+}
 
+// Бир марта: тугмаларни боғлаш ва биринчи маълумотларни орқа фонда юклаш
+function startApp() {
+  $('#deptGrid').addEventListener('click', e => {
+    const b = e.target.closest('.dept');
+    if (!b) return;
+    if (b.dataset.go) showView(b.dataset.go); else openForm(b.dataset.key);
+  });
+  $('#lDate').value = today();
   $$('.nav').forEach(t => { t.onclick = () => showView(t.dataset.view); });
-  $('#logout').onclick = () => { sess.del('pin'); location.reload(); };
+  $('#logout').onclick = () => { sess.del('pin'); sess.del('boot'); location.reload(); };
 
   bindForm();
   bindList();
@@ -186,7 +245,7 @@ function startApp() {
   bindReport();
   setRange('today');
   showView('qabul');
-  loadStays(true);
+  loadStays('active', true);
   loadDebts(true);
 }
 
@@ -338,6 +397,8 @@ function bindForm() {
       const j = await api('add', { dept: S.dept.key, data: data });
       toast('Сақланди. Навбат № ' + j.record['Навбат №']);
       printVisit(j.record, S.dept.name);
+      const ck = 'list:' + S.dept.key + ':' + j.record['Сана'];
+      if (C[ck]) C[ck].unshift(j.record);
       openForm(S.dept.key);
       if (j.record['Қарз'] > 0) loadDebts(true);
     } catch (err) {
@@ -367,7 +428,7 @@ function bindList() {
       const reason = prompt('Бекор қилиш сабаби (' + r['Ф.И.Ш'] + '):');
       if (reason === null) return;
       busy(b, true);
-      try { await api('cancel', { dept: d.key, id: r['ID'], reason: reason }); toast('Бекор қилинди'); loadList(); loadDebts(true); }
+      try { await api('cancel', { dept: d.key, id: r['ID'], reason: reason }); toast('Бекор қилинди'); r['Ҳолат'] = 'Бекор'; r['Қарз'] = 0; renderList(d, S.list); loadList(); loadDebts(true); }
       catch (err) { toast(err.message, true); busy(b, false); }
     }
 
@@ -375,7 +436,7 @@ function bindList() {
       const field = b.dataset.field;
       if (!confirm(r['Ф.И.Ш'] + ' — ' + field + ': ' + showDate(today()) + '?')) return;
       busy(b, true);
-      try { await api('setField', { dept: d.key, id: r['ID'], field: field, value: today() }); toast('Сақланди'); loadList(); }
+      try { await api('setField', { dept: d.key, id: r['ID'], field: field, value: today() }); toast('Сақланди'); r[field] = today(); renderList(d, S.list); }
       catch (err) { toast(err.message, true); busy(b, false); }
     }
   });
@@ -384,15 +445,22 @@ function bindList() {
 async function loadList() {
   const key = $('#lDept').value;
   const d = deptBy(key);
-  $('#lStats').innerHTML = '';
-  $('#lTable').innerHTML = empty('Юкланмоқда…');
+  const date = $('#lDate').value || today();
+  const ck = 'list:' + key + ':' + date;
+  S.listKey = ck;
+  if (C[ck]) { S.list = C[ck]; S.listDept = d; renderList(d, C[ck]); }
+  else { $('#lStats').innerHTML = ''; $('#lTable').innerHTML = empty('Юкланмоқда…'); }
   try {
-    const j = await api('list', { dept: key, date: $('#lDate').value || today() });
+    const j = await api('list', { dept: key, date: date });
+    C[ck] = j.rows;
+    if (S.listKey !== ck) return;
     S.list = j.rows;
     S.listDept = d;
     renderList(d, j.rows);
   } catch (e) {
-    $('#lTable').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`;
+    if (S.listKey !== ck) return;
+    if (C[ck]) toast(e.message, true);
+    else $('#lTable').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -443,6 +511,7 @@ function renderList(d, rows) {
 /* ================= ЁТОҚХОНА ================= */
 function bindYotoq() {
   $('#yMode').addEventListener('seg', e => { S.stayMode = e.detail; loadStays(); });
+  $('#yLoad').onclick = () => loadStays();
   $('#yAdmit').onclick = openAdmit;
   $('#yGrid').addEventListener('click', e => {
     const c = e.target.closest('[data-stay]');
@@ -454,22 +523,48 @@ function bindYotoq() {
   $('#sheet').addEventListener('change', onSheetInput);
 }
 
-async function loadStays(silent) {
-  const mode = silent ? 'active' : S.stayMode;
-  if (!silent) { $('#yGrid').innerHTML = '<p class="muted pad">Юкланмоқда…</p>'; $('#yStats').innerHTML = ''; }
+// quiet = фақат орқа фонда янгилаш (экранни «Юкланмоқда»га ўтказмайди)
+async function loadStays(mode, quiet) {
+  mode = mode || S.stayMode;
+  const ck = 'stays:' + mode;
+  const shown = () => mode === S.stayMode;
+  if (shown()) {
+    if (C[ck]) renderStays(C[ck], mode);
+    else if (!quiet) { $('#yGrid').innerHTML = '<p class="muted pad">Юкланмоқда…</p>'; $('#yStats').innerHTML = ''; }
+  }
   try {
     const j = await api('stays', { mode: mode });
-    if (mode === 'active') setPill('#nYotoq', j.stats.count);
-    if (silent) return;
-    S.stays = j.rows;
-    renderStays(j, mode);
+    C[ck] = j.rows;
+    if (shown()) renderStays(j.rows, mode);
+    else if (mode === 'active') setPill('#nYotoq', j.rows.length);
   } catch (e) {
-    if (!silent) $('#yGrid').innerHTML = `<p class="err pad">${esc(e.message)}</p>`;
+    if (shown() && !C[ck] && !quiet) $('#yGrid').innerHTML = `<p class="err pad">${esc(e.message)}</p>`;
+    else if (!quiet) toast(e.message, true);
   }
 }
 
-function renderStays(j, mode) {
-  const st = j.stats;
+// Сервер жавобидаги беморни кешга қўйиб, рўйхатни дарҳол янгилайди
+function patchStay(v) {
+  const id = v.stay['ID'];
+  const lite = { stay: v.stay, calc: v.calc };
+  const gone = v.stay['Ҳолат'] === 'Бекор';
+  ['active', 'done'].forEach(m => {
+    const ck = 'stays:' + m;
+    if (!C[ck]) return;
+    C[ck] = C[ck].filter(x => x.stay['ID'] !== id);
+    if (!gone && (m === 'active') === !!v.calc.active) {
+      if (m === 'active') C[ck].push(lite); else C[ck].unshift(lite);
+    }
+  });
+  if (C['stays:' + S.stayMode]) renderStays(C['stays:' + S.stayMode], S.stayMode);
+  else if (C['stays:active']) setPill('#nYotoq', C['stays:active'].length);
+}
+
+function renderStays(rows, mode) {
+  S.stays = rows;
+  const st = { count: rows.length, total: 0, paid: 0, balance: 0 };
+  rows.forEach(v => { st.total += v.calc.total; st.paid += v.calc.paid; st.balance += v.calc.balance; });
+  if (mode === 'active') setPill('#nYotoq', st.count);
   $('#yStats').innerHTML = mode === 'active'
     ? stat('Ҳозир ётганлар', st.count, 'main') +
       stat('Жорий ҳисоб', money(st.total), '', 'бугунгача') +
@@ -478,12 +573,12 @@ function renderStays(j, mode) {
     : stat('Кетганлар', st.count) + stat('Жами ҳисоб', money(st.total)) +
       stat('Тўланган', money(st.paid), 'good') + stat('Қарз', money(Math.max(0, st.balance)), st.balance > 0 ? 'warn' : '');
 
-  if (!j.rows.length) {
+  if (!rows.length) {
     $('#yGrid').innerHTML = `<div class="blank"><b>${mode === 'active' ? 'Ҳозир ётган бемор йўқ' : 'Кетган беморлар йўқ'}</b>
       <span>Янги беморни «+ Бемор қабул қилиш» тугмаси орқали ёзинг.</span></div>`;
     return;
   }
-  $('#yGrid').innerHTML = j.rows.map(v => {
+  $('#yGrid').innerHTML = rows.map(v => {
     const s = v.stay, c = v.calc;
     const bal = c.balance;
     const tag = bal > 0 ? `<span class="badge warn">${c.active ? 'Қолдиқ' : 'Қарз'} ${money(bal)}</span>`
@@ -530,12 +625,19 @@ function openAdmit() {
 }
 
 async function openStay(id) {
+  // Рўйхатдаги маълумот дарҳол кўрсатилади, муолажа ва тўловлар орқа фонда келади
+  const lite = (S.stays || []).find(x => x.stay['ID'] === id);
   openSheet('<p class="muted pad">Юкланмоқда…</p>', 'drawer');
+  if (lite) renderStay({ stay: lite.stay, calc: lite.calc, charges: [], payments: [], loading: true });
   try {
     const j = await api('stay', { id: id });
-    renderStay(j.detail);
+    if ($('#overlay').classList.contains('hidden') || (S.stay && S.stay.stay['ID'] !== id)) return;
+    if (!S.stay || S.stay.loading) {
+      const open = $('#sheet .panel:not(.hidden)');
+      renderStay(j.detail, open ? open.dataset.panel : null);
+    }
   } catch (e) {
-    $('#sheet').innerHTML = `<p class="err pad">${esc(e.message)}</p>`;
+    if (!lite) $('#sheet').innerHTML = `<p class="err pad">${esc(e.message)}</p>`; else toast(e.message, true);
   }
 }
 
@@ -569,12 +671,12 @@ function renderStay(v, keep) {
         <span class="am">${money(x['Сумма'])}</span>
         ${act ? `<button type="button" class="x" title="Олиб ташлаш" data-act="chargeDel" data-id="${esc(x['ID'])}">×</button>` : '<span></span>'}
       </div>`).join('') + '</div>';
-  }).join('') : '<p class="muted note">Ҳали муолажа киритилмаган.</p>';
+  }).join('') : `<p class="muted note">${v.loading ? 'Юкланмоқда…' : 'Ҳали муолажа киритилмаган.'}</p>`;
 
   const paysHtml = v.payments.length ? v.payments.map(p => `<div class="line">
       <span class="nm">${showDate(p['Сана'])} ${esc(p['Вақт'])}<small>${esc(p['Тури'])} · ${esc(p['Тўлов тури'])}</small></span>
       <span class="am">${money(p['Сумма'])}</span><span></span></div>`).join('')
-    : '<p class="muted note">Тўлов қилинмаган.</p>';
+    : `<p class="muted note">${v.loading ? 'Юкланмоқда…' : 'Тўлов қилинмаган.'}</p>`;
 
   $('#sheet').innerHTML = `
     <div class="sheet-head">
@@ -720,7 +822,7 @@ async function onSheetClick(e) {
   if (act === 'chargeDel') {
     if (!confirm('Бу муолажа ҳисобдан олиб ташлансинми?')) return;
     busy(b, true);
-    try { const j = await api('stayChargeCancel', { chargeId: b.dataset.id }); renderStay(j.detail); loadStays(); }
+    try { const j = await api('stayChargeCancel', { chargeId: b.dataset.id }); renderStay(j.detail); patchStay(j.detail); }
     catch (err) { toast(err.message, true); busy(b, false); }
   }
 
@@ -728,7 +830,7 @@ async function onSheetClick(e) {
     const reason = prompt('Ётоқ ёзувини бекор қилиш сабаби (тўловлари ҳам бекор бўлади):');
     if (reason === null) return;
     busy(b, true);
-    try { await api('cancel', { dept: YOTOQ, id: id, reason: reason }); toast('Бекор қилинди'); closeSheet(); loadStays(); }
+    try { await api('cancel', { dept: YOTOQ, id: id, reason: reason }); toast('Бекор қилинди'); const g = S.stay; g.stay['Ҳолат'] = 'Бекор'; patchStay(g); closeSheet(); loadDebts(true); }
     catch (err) { toast(err.message, true); busy(b, false); }
   }
 
@@ -758,7 +860,8 @@ async function onSheetSubmit(e) {
       toast('Бемор қабул қилинди. № ' + j.detail.stay['Навбат №']);
       S.stayMode = 'active';
       $$('#yMode button').forEach(x => x.classList.toggle('on', x.dataset.v === 'active'));
-      loadStays();
+      patchStay(j.detail);
+      if (!C['stays:active']) loadStays('active');
       openSheet('', 'drawer');
       renderStay(j.detail);
       if (prepay > 0) printPay({ title: 'АВАНС ТЎЛОВИ', dept: YOTOQ_NAME, fio: j.detail.stay['Ф.И.Ш'], amount: prepay, payment: payment });
@@ -785,7 +888,7 @@ async function onSheetSubmit(e) {
       renderStay(j.detail);
       const nf = $('#sheet form[data-panel="charge"]');
       if (nf && d) nf.date.value = d;
-      loadStays();
+      patchStay(j.detail);
     }
     if (kind === 'pay') {
       const amount = num(f.amount.value), payment = segVal($('[data-role=pay]', f));
@@ -794,7 +897,7 @@ async function onSheetSubmit(e) {
       const j = await api('stayPay', { id: id, amount: amount, payment: payment });
       toast('Тўлов қабул қилинди');
       renderStay(j.detail);
-      loadStays();
+      patchStay(j.detail);
       printPay({ title: 'АВАНС ТЎЛОВИ', dept: YOTOQ_NAME, fio: j.detail.stay['Ф.И.Ш'], amount: amount, payment: payment,
         note: 'Жорий ҳисоб: ' + money(j.detail.calc.total) + ' · тўланган: ' + money(j.detail.calc.paid) });
     }
@@ -803,7 +906,7 @@ async function onSheetSubmit(e) {
       const j = await api('stayEdit', { id: id, data: { room: f.room.value.trim(), rate: num(f.rate.value), arrive: f.arrive.value } });
       toast('Сақланди');
       renderStay(j.detail);
-      loadStays();
+      patchStay(j.detail);
     }
     if (kind === 'out') {
       const amount = num(f.amount.value), payment = segVal($('[data-role=pay]', f));
@@ -817,8 +920,8 @@ async function onSheetSubmit(e) {
       const j = await api('stayDischarge', { id: id, data: { date: f.date.value || today(), amount: amount, payment: payment } });
       toast('Бемор чиқарилди');
       renderStay(j.detail);
-      loadStays();
-      loadDebts(true);
+      patchStay(j.detail);
+      if (j.detail.calc.balance > 0) loadDebts(true);
       printStay(j.detail);
     }
   } catch (err) {
@@ -837,15 +940,18 @@ function bindQarz() {
   });
 }
 
-async function loadDebts(silent) {
-  if (!silent) { $('#dTable').innerHTML = empty('Юкланмоқда…'); $('#dStats').innerHTML = ''; }
+async function loadDebts(quiet) {
+  if (S.debtsLoaded) renderDebts();
+  else if (!quiet) { $('#dTable').innerHTML = empty('Юкланмоқда…'); $('#dStats').innerHTML = ''; }
   try {
     const j = await api('debts');
     S.debts = j.rows;
-    setPill('#nQarz', j.rows.length);
+    S.debtsLoaded = true;
     renderDebts();
   } catch (e) {
-    if (!silent) $('#dTable').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`;
+    if (quiet) return;
+    if (S.debtsLoaded) toast(e.message, true);
+    else $('#dTable').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -853,6 +959,7 @@ function renderDebts() {
   const q = $('#dSearch').value.trim().toLowerCase();
   const rows = S.debts.filter(r => !q || String(r.fio).toLowerCase().includes(q) || String(r.phone).toLowerCase().includes(q));
   S.debtView = rows;
+  setPill('#nQarz', S.debts.length);
   const total = rows.reduce((s, r) => s + r.debt, 0);
   const people = uniq(rows.map(r => String(r.fio).toLowerCase() + '|' + r.phone)).length;
   $('#dStats').innerHTML = stat('Жами қарз', money(total), total > 0 ? 'warn main' : 'main', 'сўм') +
@@ -901,8 +1008,13 @@ async function submitDebt(f, btn) {
     const j = await api('payDebt', { dept: r.dept, id: r.id, amount: amount, payment: payment });
     toast('Қарз тўлови қабул қилинди');
     closeSheet();
-    loadDebts();
-    if (!$('#v-yotoq').classList.contains('hidden')) loadStays();
+    // Жадвал дарҳол янгиланади, сервердан орқа фонда тасдиқланади
+    r.paid += amount; r.debt -= amount;
+    if (r.debt <= 0) S.debts = S.debts.filter(x => x !== r);
+    renderDebts();
+    Object.keys(C).forEach(k => { if (k.indexOf('list:') === 0 || k.indexOf('report:') === 0) delete C[k]; });
+    loadDebts(true);
+    if (r.dept === YOTOQ) loadStays('done', true);
     printPay({ title: 'ҚАРЗ ТЎЛОВИ', dept: r.deptName, fio: r.fio, amount: amount, payment: payment,
       note: j.payment.left > 0 ? 'Қолган қарз: ' + money(j.payment.left) + ' сўм' : 'Қарз тўлиқ ёпилди' });
   } catch (err) { toast(err.message, true); busy(btn, false); }
@@ -929,13 +1041,21 @@ function bindReport() {
 
 async function loadReport() {
   if (!S.user || S.user.role !== 'админ') return;
-  $('#pBody').innerHTML = '<p class="muted pad">Юкланмоқда…</p>';
+  const from = $('#pFrom').value, to = $('#pTo').value;
+  const ck = 'report:' + from + ':' + to;
+  S.reportKey = ck;
+  if (C[ck]) { S.report = C[ck]; renderReport(C[ck]); }
+  else $('#pBody').innerHTML = '<p class="muted pad">Юкланмоқда…</p>';
   try {
-    const j = await api('report', { from: $('#pFrom').value, to: $('#pTo').value });
+    const j = await api('report', { from: from, to: to });
+    C[ck] = j.report;
+    if (S.reportKey !== ck) return;
     S.report = j.report;
     renderReport(j.report);
   } catch (e) {
-    $('#pBody').innerHTML = `<p class="err pad">${esc(e.message)}</p>`;
+    if (S.reportKey !== ck) return;
+    if (C[ck]) toast(e.message, true);
+    else $('#pBody').innerHTML = `<p class="err pad">${esc(e.message)}</p>`;
   }
 }
 
