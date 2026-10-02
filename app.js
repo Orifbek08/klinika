@@ -3,7 +3,7 @@
 /* ==========================================================
    Apps Script Web app манзили
    ========================================================== */
-const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzDpE8-WmbNLW_IVbJqU19t4D__cPtv6jz-PUnDiesOA9RFMfUUlXh2TXJevToSZNTiGw/exec';
+const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbz3ymQP5vHuSmr4uOuMopFEqeMxk3X6wKlebIFEjJDypmMGa63Gbbe9G26eMkmpxVPGUQ/exec';
 
 /* ---------- Ёрдамчилар ---------- */
 const $ = (s, r = document) => r.querySelector(s);
