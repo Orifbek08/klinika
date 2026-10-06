@@ -127,13 +127,32 @@ const saveRes = () => store.set('res', JSON.stringify(RES));
 const saveOut = () => store.set('out', JSON.stringify(OUT.map(o => ({ dept: o.dept, id: o.id, data: o.data, rec: o.rec, tries: o.tries || 0 }))));
 
 function ensureReserved(key) {
+  if (!S.token || key === YOTOQ) return;
   const day = DB.date || today();
   if (RES.date !== day) { RES = { date: day, nums: {} }; saveRes(); }
   if (RES.nums[key] || resBusy[key]) return;
-  resBusy[key] = write('reserve', { dept: key }, true).then(j => {
+  // Навбатга қўйилмайди — бошқа ёзувлар билан параллел кетади, шунинг учун тез келади
+  const sent = DB.ver;
+  resBusy[key] = api('reserve', { dept: key, ver: sent }, true).then(j => {
+    if (j.fresh && j.ver && DB.ver === sent) DB.ver = j.ver;
     if (j.date !== RES.date) RES = { date: j.date, nums: {} };
     RES.nums[key] = j.no; saveRes();
   }, () => {}).then(() => { resBusy[key] = null; });
+}
+
+// Шу компьютерда ишлатиладиган бўлимлар учун рақам олдиндан тайёр туради
+function markUsed(key) {
+  let u = {};
+  try { u = JSON.parse(store.get('used') || '{}') || {}; } catch (e) {}
+  u[key] = today();
+  store.set('used', JSON.stringify(u));
+}
+
+function reserveUsed() {
+  let u = {};
+  try { u = JSON.parse(store.get('used') || '{}') || {}; } catch (e) {}
+  const lim = isoDate(new Date(Date.now() - 7 * 86400000));
+  Object.keys(u).forEach(k => { if (u[k] >= lim && deptBy(k)) ensureReserved(k); });
 }
 
 function takeReserved(key) {
@@ -425,8 +444,11 @@ function startApp() {
   showView('qabul');
 
   // Бошқа компьютерда киритилган ёзувлар ҳам кўриниши учун орқа фонда тенглашиб туради
-  setInterval(() => { flushOut(); if (!document.hidden) sync(); }, 45000);
+  setInterval(() => { flushOut(); if (!document.hidden) { sync(); reserveUsed(); } }, 45000);
   flushOut();
+  reserveUsed();
+  // Сичқонча бўлим устига келганда ҳам рақам олдиндан сўралади
+  $('#deptGrid').addEventListener('mouseover', e => { const b = e.target.closest('.dept[data-key]'); if (b) ensureReserved(b.dataset.key); });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
 }
 
@@ -559,6 +581,7 @@ function fastAdd(key, data, items, no) {
       phone: data.phone, items: rec['Хизматлар'], sum: data.sum, paid: data.paid, debt: rec['Қарз'] });
     DB.debtsVer = '';
   }
+  markUsed(key);
   OUT.push({ dept: key, id: id, data: Object.assign({}, data, { no: no, noDate: date, id: id }), rec: rec, tries: 0 });
   saveOut(); persist(); dropReports();
   toast('Навбат № ' + no);
@@ -659,6 +682,7 @@ function bindForm() {
     busy(btn, true);
     try {
       const key = S.dept.key;
+      markUsed(key);
       const j = await write('add', { dept: key, data: data });
       const r = j.record;
       toast('Сақланди. Навбат № ' + r['Навбат №']);

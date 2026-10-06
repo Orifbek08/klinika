@@ -7,7 +7,7 @@
  *  2) Deploy → Manage deployments → ✏ → Version: New version → Deploy
  *     (Execute as: Me, Who has access: Anyone). Ҳавола ўзгармайди.
  *
- *  ТЕКШИРИШ: ҳаволани браузерда очинг — {"ok":true,...,"v":"10"} чиқади.
+ *  ТЕКШИРИШ: ҳаволани браузерда очинг — {"ok":true,...,"v":"11"} чиқади.
  *
  *  v4 — ТЕЗЛИК
  *   • Сайт битта сўров билан бугунги ҳамма маълумотни олади («sync»)
@@ -18,7 +18,7 @@
  ******************************************************/
 
 const TZ = 'Asia/Tashkent';
-const VERSION = '10';   // кўрсатиш учун (doGet)
+const VERSION = '11';   // кўрсатиш учун (doGet)
 const SCHEMA = '5';    // варақ тузилиши; фақат устун/варақ қўшилганда оширилади
 const YOTOQ = 'yotoq';
 const S_BASE = 'База';      // ҳамма амбулатор қабуллар шу ерда; бўлим варақлари — шундан формула билан олинган кўриниш
@@ -467,7 +467,10 @@ function doPost(e) {
       before = ver_();
     }
     const res = Object.assign({ ok: true }, route_(req, user));
-    if (mut) {
+    if (req.action === 'reserve') {
+      // Рақам банд қилиш кўринадиган маълумотни ўзгартирмайди — версия ўзгармайди, сайтлар қайта юкламайди
+      res.ver = before; res.fresh = !!req.ver && req.ver === before;
+    } else if (mut) {
       res.ver = bump_();
       // fresh — сайтдаги маълумот янги: бошқа ҳеч ким орада ёзмаган, тўлиқ янгилаш шарт эмас
       res.fresh = !!req.ver && req.ver === before;
