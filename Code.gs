@@ -7,7 +7,7 @@
  *  2) Deploy → Manage deployments → ✏ → Version: New version → Deploy
  *     (Execute as: Me, Who has access: Anyone). Ҳавола ўзгармайди.
  *
- *  ТЕКШИРИШ: ҳаволани браузерда очинг — {"ok":true,...,"v":"9"} чиқади.
+ *  ТЕКШИРИШ: ҳаволани браузерда очинг — {"ok":true,...,"v":"10"} чиқади.
  *
  *  v4 — ТЕЗЛИК
  *   • Сайт битта сўров билан бугунги ҳамма маълумотни олади («sync»)
@@ -18,7 +18,7 @@
  ******************************************************/
 
 const TZ = 'Asia/Tashkent';
-const VERSION = '9';   // кўрсатиш учун (doGet)
+const VERSION = '10';   // кўрсатиш учун (doGet)
 const SCHEMA = '5';    // варақ тузилиши; фақат устун/варақ қўшилганда оширилади
 const YOTOQ = 'yotoq';
 const S_BASE = 'База';      // ҳамма амбулатор қабуллар шу ерда; бўлим варақлари — шундан формула билан олинган кўриниш
@@ -443,7 +443,7 @@ function doGet() {
   return out_(JSON.stringify({ ok: true, msg: 'Клиника API ишлаяпти', v: VERSION, schema: SCHEMA }));
 }
 
-const MUTATING = ['add', 'cancel', 'setField', 'payDebt', 'stayAdmit', 'stayOp'];
+const MUTATING = ['reserve', 'add', 'cancel', 'setField', 'payDebt', 'stayAdmit', 'stayOp'];
 
 function doPost(e) {
   let lock = null;
@@ -487,7 +487,8 @@ function route_(req, user) {
     case 'login':     return Object.assign({ user: { name: user.name, role: user.role }, config: config_() }, token_(user), req.sync ? { data: sync_(req) } : {});
     case 'sync':      return sync_(req);
     case 'list':      return { rows: list_(req.dept, req.date) };
-    case 'add':       return { record: add_(req.dept, req.data || {}, user) };
+    case 'reserve':   return reserve_(req.dept);
+    case 'add':       return { record: add_(req.dept, req.data || {}, user, req.again) };
     case 'cancel':    return { result: cancel_(req.dept, req.id, req.row, user, req.reason) };
     case 'setField':  return { result: setField_(req.dept, req.id, req.row, req.field, req.value) };
     case 'debts':     return debts_();
@@ -823,7 +824,15 @@ function activeStays_() {
 
 /* ================= АМБУЛАТОР ҚАБУЛ ================= */
 
-function add_(key, data, user) {
+// Навбат рақамини олдиндан банд қилади: сайт чекни дарҳол чиқариб, ёзувни орқа фонда юборади.
+function reserve_(key) {
+  const d = dept_(key);
+  if (d.key === YOTOQ) throw new Error('Ётоқхона учун эмас');
+  const date = today_();
+  return { no: nextNo_(d, date), date: date, dept: key };
+}
+
+function add_(key, data, user, again) {
   const d = dept_(key);
   if (d.key === YOTOQ) throw new Error('Ётоқхона учун «Ётоқхона» бўлимидан фойдаланинг');
   const fio = String(data.fio || '').trim();
@@ -839,9 +848,16 @@ function add_(key, data, user) {
 
   const now = new Date();
   const date = fmt_(now, 'yyyy-MM-dd');
-  const no = nextNo_(d, date);
+  // Қайта юборилган ёзув (аввалги жавоб йўқолган) — базада бор бўлса, иккинчи марта ёзилмайди
+  if (again && data.id) {
+    const L0 = locate_(S_BASE, data.id, 0);
+    if (L0) { const o0 = obj_(L0.head, L0.v); o0._row = L0.r; o0.items = items; o0.dept = d.name; return o0; }
+  }
+  // Сайт олдиндан банд қилган рақам (шу куннинг) бўлса — шуни ишлатамиз
+  const pre = int_(data.no) > 0 && String(data.noDate || '') === date;
+  const no = pre ? int_(data.no) : nextNo_(d, date);
   const rec = {
-    'ID': d.key + '-' + stamp_(now) + '-' + no,
+    'ID': (pre && data.id) ? String(data.id) : d.key + '-' + stamp_(now) + '-' + no,
     'Сана': date,
     'Вақт': fmt_(now, 'HH:mm'),
     'Навбат №': no,
