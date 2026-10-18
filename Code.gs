@@ -7,7 +7,7 @@
  *  2) Deploy → Manage deployments → ✏ → Version: New version → Deploy
  *     (Execute as: Me, Who has access: Anyone). Ҳавола ўзгармайди.
  *
- *  ТЕКШИРИШ: ҳаволани браузерда очинг — {"ok":true,...,"v":"11"} чиқади.
+ *  ТЕКШИРИШ: ҳаволани браузерда очинг — {"ok":true,...,"v":"12"} чиқади.
  *
  *  v4 — ТЕЗЛИК
  *   • Сайт битта сўров билан бугунги ҳамма маълумотни олади («sync»)
@@ -18,8 +18,8 @@
  ******************************************************/
 
 const TZ = 'Asia/Tashkent';
-const VERSION = '11';   // кўрсатиш учун (doGet)
-const SCHEMA = '5';    // варақ тузилиши; фақат устун/варақ қўшилганда оширилади
+const VERSION = '12';   // кўрсатиш учун (doGet)
+const SCHEMA = '6';    // варақ тузилиши; фақат устун/варақ қўшилганда оширилади
 const YOTOQ = 'yotoq';
 const S_BASE = 'База';      // ҳамма амбулатор қабуллар шу ерда; бўлим варақлари — шундан формула билан олинган кўриниш
 const S_YOT = 'Ётоқхона';
@@ -28,6 +28,8 @@ const S_PAY = 'Тўловлар';
 const S_CHG = 'Ётоқ хизматлари';
 const JC = 'Муолажалар (маълумот)';
 const JP = 'Тўловлар (маълумот)';
+const H_CH = 'Муолажалар тарихи';   // одам ўқийдиган кўриниш (JC дан ҳосил қилинади)
+const H_PY = 'Тўловлар тарихи';     // одам ўқийдиган кўриниш (JP дан ҳосил қилинади)
 
 // Бўлимлар. reset:true — навбат ҳар куни 1 дан бошланади.
 const DEPTS = [
@@ -52,6 +54,8 @@ const DEPTS = [
       { h: 'Ётоқ тури',   t: 'text' },
       { h: 'Кунлик нарх', t: 'num' },
       { h: 'Муолажалар суммаси', t: 'num' },
+      { h: H_CH, t: 'hist' },
+      { h: H_PY, t: 'hist' },
       { h: JC, t: 'json' },
       { h: JP, t: 'json' } ] }
 ];
@@ -228,7 +232,12 @@ function build_() {
     const ex = yd.extra.find(x => x.h === h);
     if (['ID', 'Сана', 'Вақт', 'Туғилган йил', 'Телефон'].indexOf(h) >= 0 || (ex && ex.t !== 'num')) ytext.push(i + 1);
   });
-  ensureCols_(makeSheet_(ss, S_YOT, yhead, [], ytext), yhead);
+  const ysh = makeSheet_(ss, S_YOT, yhead, [], ytext);
+  ensureCols_(ysh, yhead);
+  const yh = headRaw_(ysh);
+  // Хом (JSON) устунлар яширилади — дастур учун керак, одамга ўқиш учун эмас
+  [JC, JP].forEach(h => { const c = yh.indexOf(h); if (c >= 0) { try { ysh.hideColumns(c + 1); } catch (e) {} } });
+  [H_CH, H_PY].forEach(h => { const c = yh.indexOf(h); if (c >= 0) { try { ysh.setColumnWidth(c + 1, 340); } catch (e) {} } });
 
   // База + бўлим кўринишлари
   const btext = [];
@@ -323,28 +332,46 @@ function headers_(d) { return COMMON.concat(d.extra.map(x => x.h)); }
 // муолажа ва тўловларни бемор қаторининг ўзига ёзиб қўяди.
 function resyncStays_() {
   try {
-    const t = readAll_(S_YOT);
-    const todo = t.rows.filter(o => o['Ҳолат'] !== 'Бекор' && !String(o[JC] || '').trim() && !String(o[JP] || '').trim());
-    if (!todo.length) return;
-    const chBy = {}, pyBy = {};
-    readAll_(S_CHG).rows.forEach(c => {
-      if (c['Ҳолат'] === 'Бекор') return;
-      (chBy[c['Ётиш ID']] = chBy[c['Ётиш ID']] || []).push(
-        [c['ID'], c['Сана'], c['Бўлим'], c['Хизмат'], n_(c['Сони']) || 1, n_(c['Нарх']), n_(c['Сумма'])]);
-    });
-    readAll_(S_PAY).rows.forEach(p => {
-      if (p['Ҳолат'] === 'Бекор' || p['Бўлим'] !== S_YOT) return;
-      (pyBy[p['Ёзув ID']] = pyBy[p['Ёзув ID']] || []).push(
-        [p['Сана'], p['Вақт'], n_(p['Сумма']), p['Тўлов тури'], p['Тури']]);
-    });
-    todo.forEach(o => {
-      const ch = chBy[o['ID']] || [], py = pyBy[o['ID']] || [];
-      const L = { sh: t.sh, head: t.head, r: o._row, v: t.sh.getRange(o._row, 1, 1, t.head.length).getValues()[0] };
+    const t = T_(S_YOT, true);
+    const head = t.head;
+    if (head.indexOf(JC) < 0 || head.indexOf(H_PY) < 0) return;
+    const n = t.sh.getLastRow() - 1;
+    if (n < 1) return;
+    const rg = t.sh.getRange(2, 1, n, head.length);
+    const v = rg.getValues();
+    let chBy = null, pyBy = null;   // эски вариант ёзувлари учун манба (керак бўлсагина ўқилади)
+    let changed = false;
+    for (let i = 0; i < v.length; i++) {
+      const o = obj_(head, v[i]);
+      if (!o['ID'] || o['Ҳолат'] === 'Бекор') continue;
+      let ch, py;
+      if (String(o[JC] || '').trim() !== '' || String(o[JP] || '').trim() !== '') {
+        ch = arr_(o[JC]); py = arr_(o[JP]);
+      } else {
+        if (!chBy) {
+          chBy = {}; pyBy = {};
+          readAll_(S_CHG).rows.forEach(c => {
+            if (c['Ҳолат'] === 'Бекор') return;
+            (chBy[c['Ётиш ID']] = chBy[c['Ётиш ID']] || []).push(
+              [c['ID'], c['Сана'], c['Бўлим'], c['Хизмат'], n_(c['Сони']) || 1, n_(c['Нарх']), n_(c['Сумма'])]);
+          });
+          readAll_(S_PAY).rows.forEach(p => {
+            if (p['Ҳолат'] === 'Бекор' || p['Бўлим'] !== S_YOT) return;
+            (pyBy[p['Ёзув ID']] = pyBy[p['Ёзув ID']] || []).push(
+              [p['Сана'], p['Вақт'], n_(p['Сумма']), p['Тўлов тури'], p['Тури']]);
+          });
+        }
+        ch = chBy[o['ID']] || []; py = pyBy[o['ID']] || [];
+      }
       const upd = stayTotals_(o, ch, py);
       upd[JC] = JSON.stringify(ch);
       upd[JP] = JSON.stringify(py);
-      save_(L, upd);
-    });
+      Object.keys(upd).forEach(k => {
+        const c = head.indexOf(k);
+        if (c >= 0 && String(v[i][c]) !== String(upd[k])) { v[i][c] = upd[k]; changed = true; }
+      });
+    }
+    if (changed) rg.setValues(v);   // ҳамма қатор битта ёзиш билан
   } catch (e) {}
 }
 
@@ -490,6 +517,7 @@ function route_(req, user) {
     case 'login':     return Object.assign({ user: { name: user.name, role: user.role }, config: config_() }, token_(user), req.sync ? { data: sync_(req) } : {});
     case 'sync':      return sync_(req);
     case 'list':      return { rows: list_(req.dept, req.date) };
+    case 'range':     return range_(req.from, req.to);
     case 'reserve':   return reserve_(req.dept);
     case 'add':       return { record: add_(req.dept, req.data || {}, user, req.again) };
     case 'cancel':    return { result: cancel_(req.dept, req.id, req.row, user, req.reason) };
@@ -727,7 +755,7 @@ function configRead_() {
     phone: s['Телефон'] || '',
     receiptWidth: Number(s['Чек эни (мм)']) || 80,
     payments: (s['Тўлов турлари'] || 'Нақд, Карта').split(',').map(x => x.trim()).filter(String),
-    depts: DEPTS.map(d => ({ key: d.key, name: d.name, extra: d.extra.filter(x => x.t !== 'json' && x.t !== 'num') })),
+    depts: DEPTS.map(d => ({ key: d.key, name: d.name, extra: d.extra.filter(x => x.t === 'date' || x.t === 'time' || x.t === 'text') })),
     services: rows_('Хизматлар').filter(r => r[1]).map(r => ({ dept: String(r[0]).trim(), name: String(r[1]).trim(), price: Number(r[2]) || 0 })),
     doctors: rows_('Докторлар').filter(r => r[0]).map(r => ({ name: String(r[0]).trim(), dept: String(r[1]).trim(), share: Number(r[2]) || 0 }))
   };
@@ -893,6 +921,19 @@ function add_(key, data, user, again) {
   return rec;
 }
 
+// Давр бўйича ҳамма амбулатор қабуллар (сайт бўлим бўйича ўзи ажратади). Версия бўйича кешланади.
+function range_(from, to) {
+  const t0 = today_();
+  from = String(from || t0); to = String(to || from);
+  if (from > to) { const x = from; from = to; to = x; }
+  if (days_(from, to) > 95) throw new Error('Давр 3 ойдан ошмасин');
+  const ver = ver_();
+  return memo_('rng_' + from + '_' + to, ver, () => ({
+    ver: ver, from: from, to: to,
+    rows: tail_(S_BASE, o => o['Сана'] >= from && o['Сана'] <= to, o => !!o['Сана'] && String(o['Сана']) < from)
+  }));
+}
+
 function list_(key, date) {
   const d = dept_(key);
   return tail_(S_BASE, o => o['Сана'] === date && o['Бўлим'] === d.name, o => !!o['Сана'] && String(o['Сана']) < String(date));
@@ -984,6 +1025,8 @@ function payDebt_(key, id, hint, amount, payType, user) {
   if (d.key === YOTOQ) {
     const py = arr_(row[JP]);
     py.push([fmt_(now, 'yyyy-MM-dd'), fmt_(now, 'HH:mm'), amount, payType || '', 'Қарз тўлови']);
+    const tot = stayTotals_(row, arr_(row[JC]), py);
+    upd[H_PY] = tot[H_PY];
     upd[JP] = JSON.stringify(py);
   }
   save_(L, upd);
@@ -1008,6 +1051,9 @@ function stayOut_(o) {
   return s;
 }
 
+function fmtMoney_(n) { return String(Math.round(n_(n))).replace(/\B(?=(\d{3})+(?!\d))/g, ' '); }
+function dm_(s) { const p = String(s || '').split('-'); return p.length === 3 ? p[2] + '.' + p[1] : String(s || ''); }
+
 function stayTotals_(o, ch, py) {
   const days = days_(o['Келган сана'] || o['Сана'], o['Кетган сана'] || today_());
   const svc = ch.reduce((s, c) => s + n_(c[6]), 0);
@@ -1015,13 +1061,22 @@ function stayTotals_(o, ch, py) {
   const total = days * n_(o['Кунлик нарх']) + svc;
   const names = [];
   ch.forEach(c => { if (names.indexOf(c[3]) < 0) names.push(c[3]); });
-  return {
+  // Одам ўқийдиган тарих: «03.10: Массаж ×2 120 000, ФТ 20 000 | 04.10: ОАК 30 000»
+  const byDay = {};
+  ch.forEach(c => { (byDay[c[1]] = byDay[c[1]] || []).push(c); });
+  const chText = Object.keys(byDay).sort().map(d => dm_(d) + ': ' +
+    byDay[d].map(c => c[3] + (n_(c[4]) > 1 ? ' ×' + c[4] : '') + ' ' + fmtMoney_(c[6])).join(', ')).join(' | ');
+  const pyText = py.map(p => dm_(p[0]) + ' ' + (p[4] || 'Тўлов') + ' ' + fmtMoney_(p[2]) + (p[3] ? ' (' + p[3] + ')' : '')).join(' | ');
+  const out = {
     'Сумма': total,
     'Тўланган': paid,
     'Қарз': Math.max(0, total - paid),
     'Муолажалар суммаси': svc,
     'Хизматлар': ['Ётоқ ' + days + ' кун'].concat(names.slice(0, 8)).join(', ')
   };
+  out[H_CH] = chText.slice(0, 45000);
+  out[H_PY] = pyText.slice(0, 45000);
+  return out;
 }
 
 function staysDone_() {

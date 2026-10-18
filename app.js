@@ -24,7 +24,6 @@ const MUTATING = ['reserve', 'add', 'cancel', 'setField', 'payDebt', 'stayAdmit'
    lists — бугунги қабуллар (бўлим бўйича), stays — ҳозир ётганлар,
    done — кетганлар, debts — қарзлар (иккаласи биринчи очилганда юкланади). */
 const DB = { date: '', ver: '', lists: {}, stays: [], done: null, debts: null, debtsVer: '' };
-const C = {};           // бошқа саналар рўйхати ва ҳисоботлар кеши
 let pending = 0;        // жорий сўровлар
 let W = 0;              // навбатдаги ёзишлар
 let Q = Promise.resolve();
@@ -417,9 +416,9 @@ function applyConfig() {
     .map(d => `<button type="button" class="dept${d.key === active ? ' active' : ''}" data-key="${d.key}">${esc(d.name)}</button>`).join('') +
     `<button type="button" class="dept alt" data-go="yotoq">${YOTOQ_NAME} →</button>`;
 
-  const cur = $('#lDept').value || store.get('lDept') || '';
-  $('#lDept').innerHTML = out.map(d => `<option value="${d.key}">${esc(d.name)}</option>`).join('');
-  if (cur && out.some(d => d.key === cur)) $('#lDept').value = cur;
+  const cur = $('#lDept').value || store.get('lDept') || 'all';
+  $('#lDept').innerHTML = '<option value="all">Ҳамма бўлимлар</option>' + out.map(d => `<option value="${d.key}">${esc(d.name)}</option>`).join('');
+  $('#lDept').value = (cur === 'all' || out.some(d => d.key === cur)) ? cur : 'all';
   $('#docList').innerHTML = uniq(S.cfg.doctors.map(d => d.name)).map(n => `<option value="${esc(n)}">`).join('');
   if (!$('#qPay').children.length) $('#qPay').innerHTML = segHtml(S.cfg.payments);
 }
@@ -431,7 +430,7 @@ function startApp() {
     if (!b) return;
     if (b.dataset.go) showView(b.dataset.go); else openForm(b.dataset.key);
   });
-  $('#lDate').value = today();
+  restoreListRange();
   $$('.nav').forEach(t => { t.onclick = () => showView(t.dataset.view); });
   $('#logout').onclick = () => { ['auth', 'db', 'rep'].forEach(k => store.del(k)); location.reload(); };
 
@@ -695,7 +694,6 @@ function bindForm() {
         DB.debtsVer = '';
       }
       persist();
-      delete C['list:' + key + ':' + r['Сана']];
       dropReports();
       refreshView();
       openForm(key);
@@ -720,17 +718,98 @@ function bindForm() {
 
 
 /* ================= РЎЙХАТ ================= */
+/* Бугунги рўйхат — маҳаллий базадан (дарҳол). Бошқа кун ва даврлар — сервердан, кеш (RG) билан:
+   аввал охирги сақлангани кўрсатилади, маълумот ўзгарган бўлса орқа фонда янгиланади. */
+const RG = {};
+try { Object.assign(RG, JSON.parse(store.get('rng') || '{}') || {}); } catch (e) {}
+let listReq = 0;
+
+function saveRG() {
+  const keys = Object.keys(RG).sort((a, b) => (RG[b].at || 0) - (RG[a].at || 0)).slice(0, 4);
+  const o = {};
+  keys.forEach(k => { o[k] = RG[k]; });
+  const txt = JSON.stringify(o);
+  if (txt.length < 2500000) store.set('rng', txt);
+}
+
+function listRange() {
+  const f = $('#lFrom').value || today(), t = $('#lTo').value || f;
+  return f <= t ? { from: f, to: t } : { from: t, to: f };
+}
+
+function setListRange(k) {
+  const d = new Date();
+  let f, t = today();
+  if (k === 'today') f = t;
+  else if (k === 'yesterday') { const y = new Date(d); y.setDate(d.getDate() - 1); f = t = isoDate(y); }
+  else if (k === 'week') { const y = new Date(d); y.setDate(d.getDate() - 6); f = isoDate(y); }
+  else if (k === 'month') f = isoDate(new Date(d.getFullYear(), d.getMonth(), 1));
+  else if (k === 'lastmonth') { f = isoDate(new Date(d.getFullYear(), d.getMonth() - 1, 1)); t = isoDate(new Date(d.getFullYear(), d.getMonth(), 0)); }
+  $('#lFrom').value = f;
+  $('#lTo').value = t;
+}
+
+const deptOfRow = r => S.cfg.depts.find(x => x.name === r['Бўлим']) || null;
+
+function todayRows(key) {
+  if (key !== 'all') return DB.lists[key] || (DB.lists[key] = []);
+  let out = [];
+  Object.keys(DB.lists).forEach(k => { if (deptBy(k)) out = out.concat(DB.lists[k] || []); });
+  return out;
+}
+
+const byTimeDesc = (a, b) => (String(b['Сана']) + ' ' + String(b['Вақт'])).localeCompare(String(a['Сана']) + ' ' + String(a['Вақт']));
+
+// Сервердан келган давр + бугунги маҳаллий (янгироқ) ёзувлар
+function mergeRange(rows, key, from, to) {
+  let out = rows.filter(r => key === 'all' ? !!deptOfRow(r) : (deptOfRow(r) || {}).key === key);
+  if (DB.date && from <= DB.date && DB.date <= to) out = out.filter(r => r['Сана'] !== DB.date).concat(todayRows(key));
+  return out.slice().sort(byTimeDesc);
+}
+
+function setListUpd(c) {
+  const el = $('#lUpd');
+  if (!c) { el.innerHTML = ''; return; }
+  const d = new Date(c.at || 0);
+  el.innerHTML = '· янгиланди ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + (c.ver !== DB.ver ? ' · <span class="saving">янгиланмоқда…</span>' : '');
+}
+
+// Охирги танланган давр эслаб қолинади (қайта очилганда шу давр кўрсатилади)
+function restoreListRange() {
+  let r = null;
+  try { r = JSON.parse(store.get('lRange') || 'null'); } catch (e) {}
+  if (r && r.k && $(`#lRange [data-v="${r.k}"]`)) {
+    setListRange(r.k);
+    $$('#lRange button').forEach(b => b.classList.toggle('on', b.dataset.v === r.k));
+  } else if (r && r.from && r.to) {
+    $('#lFrom').value = r.from; $('#lTo').value = r.to;
+    $$('#lRange button').forEach(b => b.classList.remove('on'));
+  } else setListRange('today');
+}
+
 function bindList() {
-  $('#lLoad').onclick = () => { if (($('#lDate').value || today()) === DB.date) sync(true); else loadList(true); };
+  $('#lRange').addEventListener('seg', e => { setListRange(e.detail); store.set('lRange', JSON.stringify({ k: e.detail })); loadList(); });
+  const custom = () => {
+    $$('#lRange button').forEach(b => b.classList.remove('on'));
+    store.set('lRange', JSON.stringify(listRange()));
+    loadList();
+  };
+  $('#lFrom').onchange = custom;
+  $('#lTo').onchange = custom;
+  $('#lLoad').onclick = () => {
+    const r = listRange();
+    if (r.from === DB.date && r.to === DB.date) sync(true); else loadList(true);
+  };
   $('#lDept').onchange = () => { store.set('lDept', $('#lDept').value); loadList(); };
-  $('#lDate').onchange = () => loadList();
 
   $('#lTable').addEventListener('click', e => {
     const b = e.target.closest('button[data-act]');
     if (!b) return;
     const r = S.list.find(x => String(x['ID']) === b.dataset.id);
     if (!r) return;
-    const d = S.listDept;
+    const d = S.listDept || deptOfRow(r);
+    if (!d) return;
+    const redraw = () => { renderList(S.listDept, S.list, S.listMulti); persist(); saveRG(); };
 
     if (b.dataset.act === 'print') { printVisit(r, d.name); return; }
 
@@ -740,75 +819,86 @@ function bindList() {
       // Экранда дарҳол ўзгаради, серверга орқа фонда ёзилади
       r['Ҳолат'] = 'Бекор'; r['Қарз'] = 0;
       if (DB.debts) { DB.debts = DB.debts.filter(x => x.id !== r['ID']); DB.debtsVer = ''; }
-      persist(); dropReports(); renderList(d, S.list); refreshView();
+      dropReports(); redraw(); refreshView();
       write('cancel', { dept: d.key, id: r['ID'], row: r._row, reason: reason })
-        .then(() => toast('Бекор қилинди'), err => { toast('Сақланмади: ' + err.message, true); sync(true); });
+        .then(() => toast('Бекор қилинди'), err => { toast('Сақланмади: ' + err.message, true); r['Ҳолат'] = 'Фаол'; redraw(); sync(true); });
     }
 
     if (b.dataset.act === 'close') {
       const field = b.dataset.field;
       if (!confirm(r['Ф.И.Ш'] + ' — ' + field + ': ' + showDate(today()) + '?')) return;
       r[field] = today();
-      persist(); renderList(d, S.list);
+      redraw();
       write('setField', { dept: d.key, id: r['ID'], row: r._row, field: field, value: today() })
         .then(() => toast('Сақланди'), err => { toast('Сақланмади: ' + err.message, true); sync(true); });
     }
   });
 }
 
-// Бугунги рўйхат маҳаллий базадан дарҳол чиқади; бошқа сана — сервердан (кеш билан).
 async function loadList(force) {
   const key = $('#lDept').value;
   if (!key) return;
-  const d = deptBy(key);
-  const date = $('#lDate').value || today();
-  if (!DB.date && date === today()) {   // биринчи маълумот ҳали келмади — сервердан алоҳида сўрамаймиз
-    $('#lStats').innerHTML = ''; $('#lTable').innerHTML = empty('Юкланмоқда…');
+  const d = key === 'all' ? null : deptBy(key);
+  if (key !== 'all' && !d) return;
+  const r = listRange();
+  const multi = r.from !== r.to;
+  S.listDept = d; S.listMulti = multi;
+  const tod = DB.date || today();
+
+  // Фақат бугун — маҳаллий базадан
+  if (r.from === tod && r.to === tod) {
+    S.listKey = '';
+    if (!DB.date) { $('#lStats').innerHTML = ''; $('#lTable').innerHTML = empty('Юкланмоқда…'); return; }
+    S.list = todayRows(key).slice().sort(byTimeDesc);
+    renderList(d, S.list, false);
+    setListUpd(null);
     return;
   }
-  if (date === DB.date) {
-    S.list = DB.lists[key] || (DB.lists[key] = []);
-    S.listDept = d; S.listKey = '';
-    renderList(d, S.list);
-    return;
-  }
-  const ck = 'list:' + key + ':' + date;
+
+  const ck = r.from + '_' + r.to;
   S.listKey = ck;
-  if (C[ck]) { S.list = C[ck]; S.listDept = d; renderList(d, C[ck]); if (!force) return; }
+  const show = () => { const c = RG[ck]; S.list = mergeRange(c.rows, key, r.from, r.to); renderList(d, S.list, multi); setListUpd(c); };
+  const had = !!RG[ck];
+  if (had) show();
   else { $('#lStats').innerHTML = ''; $('#lTable').innerHTML = empty('Юкланмоқда…'); }
+  if (had && RG[ck].ver === DB.ver && !force) return;
+
+  const my = ++listReq;
   try {
-    const j = await api('list', { dept: key, date: date });
-    C[ck] = j.rows;
-    if (S.listKey !== ck) return;
-    S.list = j.rows; S.listDept = d;
-    renderList(d, j.rows);
+    const j = await api('range', { from: r.from, to: r.to }, had);
+    RG[ck] = { rows: j.rows || [], ver: j.ver || DB.ver, at: Date.now() };
+    saveRG();
+    if (listReq !== my || S.listKey !== ck) return;
+    show();
   } catch (e) {
     if (S.listKey !== ck) return;
-    if (C[ck]) toast(e.message, true);
+    if (RG[ck]) toast(e.message, true);
     else $('#lTable').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`;
   }
 }
 
 const paidOf = r => (r['Тўланган'] === '' || r['Тўланган'] == null) ? Number(r['Сумма']) || 0 : Number(r['Тўланган']) || 0;
 
-function renderList(d, rows) {
+function renderList(d, rows, multi) {
   const ok = rows.filter(r => r['Ҳолат'] !== 'Бекор');
   const sum = ok.reduce((s, r) => s + (Number(r['Сумма']) || 0), 0);
   const paid = ok.reduce((s, r) => s + paidOf(r), 0);
   const debt = ok.reduce((s, r) => s + (Number(r['Қарз']) || 0), 0);
+  const days = uniq(ok.map(r => r['Сана'])).length;
   $('#lStats').innerHTML =
-    stat('Қабуллар', ok.length, '', d.name) +
+    stat('Қабуллар', ok.length, '', d ? d.name : 'ҳамма бўлимлар') +
+    (multi ? stat('Кунлар', days, '', ok.length && days ? 'кунига ~' + Math.round(ok.length / days) + ' та' : '') : '') +
     stat('Жами сумма', money(sum)) +
     stat('Тўланган', money(paid), 'good') +
     stat('Қарз', money(debt), debt > 0 ? 'warn' : '') +
     (rows.length - ok.length ? stat('Бекор қилинган', rows.length - ok.length) : '');
 
-  if (!rows.length) { $('#lTable').innerHTML = empty('Бу кунда ёзувлар йўқ'); return; }
+  if (!rows.length) { $('#lTable').innerHTML = empty(multi ? 'Бу даврда ёзувлар йўқ' : 'Бу кунда ёзувлар йўқ'); return; }
 
-  const closeField = d.key === 'oper' ? 'Чиққан сана' : null;
-  const ex = d.extra.map(x => x.h);
+  const closeField = d && d.key === 'oper' ? 'Чиққан сана' : null;
+  const ex = d ? d.extra.map(x => x.h) : [];
 
-  const head = `<tr><th>№</th><th>Вақт</th><th>Ф.И.Ш</th><th>Йил</th><th>Телефон</th><th>Хизматлар</th>
+  const head = `<tr>${multi ? '<th>Сана</th>' : ''}<th>№</th><th>Вақт</th>${d ? '' : '<th>Бўлим</th>'}<th>Ф.И.Ш</th><th>Йил</th><th>Телефон</th><th>Хизматлар</th>
     <th class="r">Сумма</th><th class="r">Тўланди</th><th class="r">Қарз</th><th>Тўлов</th><th>Доктор</th><th>Юборган</th>
     ${ex.map(h => `<th>${esc(h)}</th>`).join('')}<th>Ҳолат</th><th></th></tr>`;
 
@@ -820,7 +910,8 @@ function renderList(d, rows) {
       (!off && closeField && !r[closeField] ? `<button class="btn sm" data-act="close" data-field="${esc(closeField)}" data-id="${id}">Чиқди</button>` : '') +
       (!off && !r._pend ? `<button class="btn sm danger" data-act="cancel" data-id="${id}">Бекор</button>` : '');
     return `<tr class="${off ? 'cancelled' : ''}">
-      <td><b class="qno">${esc(r['Навбат №'])}</b></td><td>${esc(r['Вақт'])}</td>
+      ${multi ? `<td>${showDate(r['Сана'])}</td>` : ''}
+      <td><b class="qno">${esc(r['Навбат №'])}</b></td><td>${esc(r['Вақт'])}</td>${d ? '' : `<td>${esc(r['Бўлим'])}</td>`}
       <td class="strong">${esc(r['Ф.И.Ш'])}</td><td>${esc(r['Туғилган йил'])}</td><td>${esc(r['Телефон'])}</td>
       <td class="wrap">${esc(r['Хизматлар'])}</td><td class="r">${money(r['Сумма'])}</td>
       <td class="r">${money(paidOf(r))}</td><td class="r ${dbt > 0 ? 'neg' : ''}">${dbt > 0 ? money(dbt) : '—'}</td>
@@ -1425,7 +1516,7 @@ function submitDebt(f) {
   const st = r.dept === YOTOQ ? findStay(r.id) : null;
   if (st) st.py.push([today(), nowTime(), amount, payment, 'Қарз тўлови']);
   DB.debtsVer = '';
-  Object.keys(C).forEach(k => delete C[k]);
+  Object.keys(RG).forEach(k => { RG[k].ver = ''; });   // давр рўйхатлари кейинги очилишда янгиланади
   persist();
   closeSheet();
   renderDebts(); refreshView();
@@ -1472,7 +1563,7 @@ function repLabel() {
   const d = new Date(REP.at);
   const stale = !!DB.ver && REP.all.ver !== DB.ver && Number(DB.ver) > Number(REP.all.ver);
   el.innerHTML = '· янгиланди ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) +
-    (stale ? ' · <b class="neg">янги ёзувлар бор — «Янгилаш»ни босинг</b>' : '');
+    (repBusy ? ' · <span class="saving">янгиланмоқда…</span>' : (stale ? ' · <b class="neg">янги ёзувлар бор — «Янгилаш»ни босинг</b>' : ''));
 }
 
 // Жамланмадан танланган давр учун ҳисобот йиғади (серверга мурожаатсиз)
@@ -1517,14 +1608,15 @@ async function loadReport(force) {
   if (REP.all) showReport();
   else $('#pBody').innerHTML = '<p class="muted pad">Юкланмоқда…</p>';
   const stale = !REP.all || REP.all.ver !== DB.ver;
-  const old = !REP.all || Date.now() - REP.at > 10 * 60 * 1000;
-  if (repBusy || !(force || !REP.all || (stale && old))) return;
+  if (repBusy || !(force || stale)) return;
   repBusy = true;
-  busy($('#pRefresh'), true);
+  const quiet = !force && !!REP.all;   // кешдан кўрсатилган — орқа фонда, индикаторсиз
+  if (!quiet) busy($('#pRefresh'), true);
+  repLabel();
   try {
     // Жавобда ҳисобот бўлмаса (сервер бўш жавоб қайтарса) — бир марта қайта сўраймиз
-    let j = await api('reportAll');
-    if (!j.report || !j.report.days) j = await api('reportAll');
+    let j = await api('reportAll', {}, quiet);
+    if (!j.report || !j.report.days) j = await api('reportAll', {}, quiet);
     if (!j.report || !j.report.days) throw new Error('Сервер ҳисоботни қайтармади — яна бир марта «Янгилаш»ни босинг');
     REP.all = j.report; REP.at = Date.now();
     store.set('rep', JSON.stringify(REP));
@@ -1537,6 +1629,7 @@ async function loadReport(force) {
   } finally {
     repBusy = false;
     busy($('#pRefresh'), false);
+    repLabel();
   }
 }
 

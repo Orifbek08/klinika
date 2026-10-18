@@ -102,10 +102,17 @@
     <!-- РЎЙХАТ -->
     <section id="v-royxat" class="view hidden">
       <header class="page-head">
-        <div><h2>Рўйхат</h2><p class="muted">Кунлик қабуллар</p></div>
+        <div><h2>Рўйхат</h2><p class="muted"><span>Қабуллар</span> <span id="lUpd"></span></p></div>
         <div class="tools">
           <select id="lDept"></select>
-          <input type="date" id="lDate">
+          <div id="lRange" class="seg">
+            <button type="button" data-v="today" class="on">Бугун</button>
+            <button type="button" data-v="yesterday">Кеча</button>
+            <button type="button" data-v="week">7 кун</button>
+            <button type="button" data-v="month">Шу ой</button>
+            <button type="button" data-v="lastmonth">Ўтган ой</button>
+          </div>
+          <input type="date" id="lFrom"><span class="muted">—</span><input type="date" id="lTo">
           <button id="lLoad" class="btn">Янгилаш</button>
         </div>
       </header>
@@ -174,6 +181,6 @@
 <div id="receipt"></div>
 <div id="toast"></div>
 
-<script src="app.js?v=12"></script>
+<script src="app.js?v=14"></script>
 </body>
 </html>
