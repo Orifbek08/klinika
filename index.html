@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=7">
+  <link rel="stylesheet" href="style.css?v=8">
   <style id="pageStyle">@page { size: 80mm auto; margin: 0; }</style>
 </head>
 <body>
@@ -36,8 +36,15 @@
 
 <!-- ============ ИЛОВА ============ -->
 <div id="app" class="shell hidden">
+  <!-- Телефон учун юқори панел: меню тугмаси + саҳифа номи -->
+  <header class="topbar">
+    <button type="button" id="menuBtn" class="burger" aria-label="Меню"><span></span><span></span><span></span></button>
+    <div class="top-title"><span class="mark xs">✚</span><b id="topTitle">Қабул</b></div>
+  </header>
+  <div id="menuBg" class="menu-bg"></div>
+
   <aside class="side">
-    <div class="brand"><span class="mark sm">✚</span><span id="brand">Клиника</span></div>
+    <div class="brand"><span class="mark sm">✚</span><span id="brand">Клиника</span><button type="button" id="menuClose" class="x light" aria-label="Ёпиш">×</button></div>
     <nav id="nav">
       <button class="nav on" data-view="qabul"><i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></i><span>Қабул</span></button>
       <button class="nav" data-view="royxat"><i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg></i><span>Рўйхат</span></button>
@@ -117,7 +124,10 @@
         </div>
       </header>
       <div id="lStats" class="stats"></div>
-      <div class="card flush"><div class="table-wrap"><table id="lTable"></table></div></div>
+      <div class="card flush" id="lBox">
+        <div class="table-wrap d-only"><table id="lTable"></table></div>
+        <div id="lCards" class="vcards m-only"></div>
+      </div>
     </section>
 
     <!-- ЁТОҚХОНА -->
@@ -147,7 +157,10 @@
         </div>
       </header>
       <div id="dStats" class="stats"></div>
-      <div class="card flush"><div class="table-wrap"><table id="dTable"></table></div></div>
+      <div class="card flush" id="dBox">
+        <div class="table-wrap d-only"><table id="dTable"></table></div>
+        <div id="dCards" class="vcards m-only"></div>
+      </div>
     </section>
 
     <!-- ҲИСОБОТ -->
@@ -181,6 +194,6 @@
 <div id="receipt"></div>
 <div id="toast"></div>
 
-<script src="app.js?v=14"></script>
+<script src="app.js?v=15"></script>
 </body>
 </html>

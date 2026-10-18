@@ -110,6 +110,7 @@ input[type=checkbox] { width: 18px; height: 18px; flex: none; padding: 0; accent
 .mark { width: 56px; height: 56px; margin: 0 auto; border-radius: 16px; background: var(--primary); color: #fff;
   display: grid; place-items: center; font-size: 30px; }
 .mark.sm { width: 32px; height: 32px; font-size: 17px; border-radius: 10px; margin: 0; flex: none; }
+.mark.xs { width: 26px; height: 26px; font-size: 14px; border-radius: 8px; margin: 0; flex: none; }
 
 /* ---------- Каркас ---------- */
 .shell { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
@@ -132,6 +133,19 @@ input[type=checkbox] { width: 18px; height: 18px; flex: none; padding: 0; accent
 .who span { color: #8fa8a4; }
 .side .btn.ghost { color: #cfe0dd; border-color: rgba(255, 255, 255, .2); }
 .side .btn.ghost:hover { background: var(--side-2); }
+.x.light { color: #cfe0dd; margin-left: auto; }
+.x.light:hover { background: var(--side-2); color: #fff; }
+
+/* Телефон панели — компьютерда кўринмайди */
+.topbar, .menu-bg, #menuClose { display: none; }
+.burger { width: 42px; height: 42px; border: 0; background: transparent; cursor: pointer; border-radius: 10px; padding: 0 9px;
+  display: flex; flex-direction: column; justify-content: center; gap: 5px; flex: none; -webkit-tap-highlight-color: transparent; }
+.burger span { display: block; height: 2px; background: #fff; border-radius: 2px; transition: transform .2s, opacity .2s; }
+.burger:active { background: var(--side-2); }
+.top-title { display: flex; align-items: center; gap: 9px; font-size: 16px; color: #fff; min-width: 0; }
+.top-title b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.blank-line { text-align: center; color: var(--muted); padding: 36px 14px; margin: 0; }
+.blank-line.err { color: var(--danger); }
 
 .main { padding: 28px 32px 60px; min-width: 0; max-width: 1400px; }
 .page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
@@ -180,6 +194,7 @@ input[type=checkbox] { width: 18px; height: 18px; flex: none; padding: 0; accent
 .svc { padding: 6px 10px; border-radius: 12px; border: 1px solid var(--line-2); background: #fbfcfc; }
 .svc.on { background: var(--primary-l); border-color: #bfe3dc; }
 .svc input { height: 36px; }
+.svc .mul { display: none; }
 .chk { display: flex; flex-direction: row; align-items: center; gap: 10px; color: var(--ink); font-size: 15px; cursor: pointer; }
 .chk .s-name { min-width: 0; }
 .chk input.s-name { flex: 1; }
@@ -283,6 +298,33 @@ tr.total td { font-weight: 700; background: #f7f9f8; }
 .track { height: 10px; background: #e9eeed; border-radius: 6px; overflow: hidden; }
 .fill { height: 100%; background: var(--primary); border-radius: 6px; min-width: 2px; }
 
+/* ---------- Телефон учун карточкалар ва қаторлар ---------- */
+.vcards { display: flex; flex-direction: column; }
+.vc { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 12px; row-gap: 8px; padding: 13px 14px; border-bottom: 1px solid var(--line-2); align-items: start; }
+.vc:last-child { border-bottom: 0; }
+.vc > .qno { font-size: 14px; padding: 3px 9px; margin-top: 1px; }
+.vc-name { font-weight: 600; font-size: 15px; line-height: 1.3; overflow-wrap: anywhere; }
+.vc-sub { font-size: 13px; color: var(--muted); margin-top: 2px; line-height: 1.35; overflow-wrap: anywhere; }
+.vc-sub.ink { color: var(--ink); }
+.vc-r { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 1px; white-space: nowrap; }
+.vc-r .am { font-size: 16px; font-weight: 700; }
+.vc-r span { font-size: 12px; }
+.vc-foot { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.vc-foot .act { padding: 0; }
+.vc.cancelled .vc-name, .vc.cancelled .vc-r .am { text-decoration: line-through; color: #a9b6b8; }
+.vc.cancelled .vc-sub { color: #b7c2c4; }
+
+.rows { display: flex; flex-direction: column; }
+.row { padding: 11px 16px; border-bottom: 1px solid var(--line-2); display: flex; flex-direction: column; gap: 6px; }
+.row:last-child { border-bottom: 0; }
+.row-top { display: flex; justify-content: space-between; gap: 12px; font-size: 15px; }
+.row-top b:first-child { min-width: 0; overflow-wrap: anywhere; }
+.row-top .am { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.row-sub { font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+.row-sub .ink { color: var(--ink); }
+.row.total { background: #f7f9f8; }
+.row .track { height: 6px; }
+
 /* ---------- Орқа фонда янгиланиш белгиси ---------- */
 #syncbar { position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 60; overflow: hidden; opacity: 0; transition: opacity .2s; pointer-events: none; }
 #syncbar::before { content: ""; position: absolute; top: 0; bottom: 0; width: 35%; background: #e58a2b; border-radius: 3px; animation: sync 1.1s ease-in-out infinite; }
@@ -301,32 +343,115 @@ body.syncing #syncbar { opacity: 1; }
   .visit { grid-template-columns: 1fr; }
   .bill { position: static; }
 }
+/* Компьютерда телефон блоклари кўринмайди */
+@media (min-width: 861px) {
+  .m-only { display: none !important; }
+}
+
+/* ======================= ТЕЛЕФОН ======================= */
 @media (max-width: 860px) {
-  .shell { grid-template-columns: 1fr; }
-  .side { position: sticky; top: 0; z-index: 20; height: auto; flex-direction: row; align-items: center; padding: 8px 10px; gap: 8px; }
-  .brand { padding: 0 4px; }
-  .brand #brand, .who { display: none; }
-  #nav { flex-direction: row; overflow-x: auto; gap: 2px; scrollbar-width: none; }
-  #nav::-webkit-scrollbar { display: none; }
-  .nav { height: 38px; padding: 0 10px; gap: 6px; flex: none; }
-  .nav i { display: none; }
-  .side-foot { border: 0; padding: 0; }
-  .main { padding: 16px 16px 60px; }
-  h2 { font-size: 21px; }
-  .g4, .g3 { grid-template-columns: 1fr 1fr; }
-  .two { grid-template-columns: 1fr; }
-  .svc-head, .svc { grid-template-columns: minmax(0, 1fr) 58px 104px 28px; }
+  .d-only { display: none !important; }
+  .shell { display: block; }
+  .shell > * { min-width: 0; }
+
+  /* Юқори панел: уч чизиқ + саҳифа номи */
+  .topbar { display: flex; align-items: center; gap: 6px; position: sticky; top: 0; z-index: 20; height: 54px; padding: 0 10px;
+    background: var(--side); color: #fff; box-shadow: 0 2px 12px rgba(15, 43, 47, .18); }
+
+  /* Чап ён меню — яширин, тугма босилганда чиқади */
+  .side { position: fixed; top: 0; left: 0; bottom: 0; height: 100dvh; width: min(300px, 86vw); z-index: 41;
+    padding: 14px 12px calc(14px + env(safe-area-inset-bottom)); transform: translateX(-105%); transition: transform .24s cubic-bezier(.2, .8, .2, 1);
+    box-shadow: 0 0 0 rgba(0, 0, 0, 0); overflow-y: auto; }
+  body.menu-open .side { transform: none; box-shadow: 0 0 70px rgba(0, 0, 0, .4); }
+  body.menu-open { overflow: hidden; }
+  .menu-bg { display: block; position: fixed; inset: 0; z-index: 40; background: rgba(15, 43, 47, .5); opacity: 0; pointer-events: none; transition: opacity .2s; }
+  body.menu-open .menu-bg { opacity: 1; pointer-events: auto; }
+  .brand { padding: 4px 6px 18px; }
+  #menuClose { display: inline-flex; align-items: center; justify-content: center; }
+  .nav { height: 48px; font-size: 16px; }
+  .who { display: flex; }
+
+  .main { padding: 14px 14px calc(70px + env(safe-area-inset-bottom)); }
+  .page-head { margin-bottom: 14px; gap: 12px; }
+  .page-head h2 { display: none; }           /* сарлавҳа юқори панелда турибди */
+  .page-head > div:first-child:empty { display: none; }
+  .page-head p { margin: 0; font-size: 13px; }
+  h3 { font-size: 16px; }
+  .card { padding: 16px 14px; border-radius: 12px; }
+  .card h3.in { padding: 14px 14px 0; }
+
+  /* Асбоблар: тўлиқ кенгликда, икки устунли */
+  .tools { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; width: 100%; }
+  .tools > * { grid-column: 1 / -1; width: 100%; }
+  .tools .search, .tools select { width: 100%; }
+  .tools > .muted { display: none; }                      /* саналар орасидаги «—» */
+  .tools input[type=date] { grid-column: span 3; padding: 0 10px; }
+  #yLoad, #pRefresh, #pPrint { grid-column: span 3; }
+  #yAdmit { grid-column: span 3; }
+  .tools .seg { display: flex; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; width: 100%; }
+  .tools .seg::-webkit-scrollbar { display: none; }
+  .tools .seg button { flex: 1 0 auto; padding: 0 12px; height: 36px; }
+  .tools .btn { height: 42px; padding: 0 10px; }
+
+  /* Кўрсаткичлар: карточкалар ўрнига битта рўйхат — рақамлар сиғади ва ўқилади */
+  .stats { display: flex; flex-direction: column; gap: 0; background: #fff; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); margin-bottom: 14px; }
+  .stat { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; align-items: center; padding: 11px 14px; border: 0; border-radius: 0; border-bottom: 1px solid var(--line-2); box-shadow: none; }
+  .stat:last-child { border-bottom: 0; }
+  .stat .k { grid-column: 1; grid-row: 1; font-size: 14px; color: var(--ink); }
+  .stat .s { grid-column: 1; grid-row: 2; margin: 0; font-size: 12px; }
+  .stat .v { grid-column: 2; grid-row: 1 / span 2; font-size: 19px; margin: 0; white-space: nowrap; text-align: right; }
+  .stat.main { padding: 14px; }
+  .stat.main .k { color: #fff; font-weight: 500; }
+  .stat.main .v { font-size: 24px; }
+  .stat.warn .k { color: var(--warn); }
+  .stat.warn.main .k { color: #fff; }
+
+  /* Қабул */
+  .dept-grid { grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+  .dept { height: 56px; font-size: 14px; padding: 0 8px; border-radius: 12px; }
+  .visit { gap: 12px; }
+  .g4, .g3 { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .card-head { margin-bottom: 12px; }
+  .svc-head { display: none; }
+  .svc { grid-template-columns: 68px 16px minmax(0, 1fr) 28px; grid-template-areas: "chk chk chk chk" "qty mul price x"; gap: 8px; padding: 8px 10px; }
+  .svc .chk { grid-area: chk; }
+  .svc .s-qty { grid-area: qty; text-align: center; }
+  .svc .mul { display: block; grid-area: mul; font-style: normal; color: var(--muted); text-align: center; }
+  .svc .s-price { grid-area: price; }
+  .svc > .x, .svc > span:last-child { grid-area: x; }
+  .svc input { height: 38px; }
+  /* танланмаган хизмат — бир қатор: ном + нарх; танланганда сони × нарх қатори очилади */
+  .svc:not(.on) { grid-template-columns: minmax(0, 1fr) 104px; grid-template-areas: "chk price"; }
+  .svc:not(.on) .s-qty, .svc:not(.on) .mul, .svc:not(.on) > .x, .svc:not(.on) > span:last-child { display: none; }
+  .sum-total { font-size: 22px; height: 50px; }
+
+  /* Ётоқхона */
+  .stay-grid { gap: 10px; }
+  .stay { padding: 14px; }
   .facts { grid-template-columns: 1fr 1fr; }
-  .tools .search { width: 100%; }
-  .overlay { padding: 0; }
-  .sheet.modal { border-radius: 0; min-height: 100vh; padding: 20px 16px 40px; }
-  .sheet.drawer { padding: 20px 16px 60px; }
+
+  /* Модал ва ён панел */
+  .overlay { padding: 0; align-items: stretch; }
+  .sheet.modal { border-radius: 0; min-height: 100dvh; padding: 18px 14px calc(40px + env(safe-area-inset-bottom)); max-width: none; }
+  .sheet.drawer { padding: 18px 14px calc(60px + env(safe-area-inset-bottom)); max-width: none; }
+  .sheet-head h3 { font-size: 19px; }
+  .sheet-foot { flex-wrap: wrap; }
+  .sheet-foot .btn.big { flex: 1 1 100%; order: -1; }
   .add-line { grid-template-columns: 1fr 1fr; }
   .add-line .btn, .add-line input[name=date] { grid-column: 1 / -1; }
-  .stats.six { grid-template-columns: 1fr 1fr; }
-  .side { min-width: 0; max-width: 100vw; }
-  .shell > * { min-width: 0; }
-  .bar-row { grid-template-columns: 84px 1fr 92px; }
+  .bar .btn { flex: 1 1 calc(50% - 4px); padding: 0 8px; }
+
+  /* Ҳисобот */
+  .two { grid-template-columns: 1fr; gap: 12px; margin: 12px 0; }
+  .bar-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "label value" "track track"; gap: 4px 10px; margin-bottom: 12px; }
+  .bar-row span { grid-area: label; color: var(--ink); white-space: normal; }
+  .bar-row b { grid-area: value; }
+  .bar-row .track { grid-area: track; height: 7px; }
+  .note { font-size: 12.5px; }
+  .totals.plain .tot { padding: 10px 12px; }
+
+  /* Жадваллар (компьютерда қолган жойларда) */
+  th, td { padding: 10px 12px; }
 }
 @media (max-width: 480px) {
   .g2 { grid-template-columns: 1fr; }

@@ -267,6 +267,11 @@ const segHtml = (vals, sel) => vals.map((v, i) =>
 const segVal = el => { const b = el && el.querySelector('.on'); return b ? b.dataset.v : ''; };
 const stat = (k, v, cls, sub) => `<div class="stat ${cls || ''}"><div class="k">${esc(k)}</div><div class="v">${v}</div>${sub ? `<div class="s">${esc(sub)}</div>` : ''}</div>`;
 const empty = (msg, cols) => `<tr><td class="empty"${cols ? ` colspan="${cols}"` : ''}>${esc(msg)}</td></tr>`;
+// Жадвал (компьютер) ва карточкалар (телефон) учун бир хил хабар
+const boxMsg = (p, msg, err) => {
+  $('#' + p + 'Table').innerHTML = err ? `<tr><td class="err">${esc(msg)}</td></tr>` : empty(msg);
+  $('#' + p + 'Cards').innerHTML = `<p class="blank-line${err ? ' err' : ''}">${esc(msg)}</p>`;
+};
 
 /* Умумий: сегмент тугмалар ва пул майдонлари */
 document.addEventListener('click', e => {
@@ -431,8 +436,14 @@ function startApp() {
     if (b.dataset.go) showView(b.dataset.go); else openForm(b.dataset.key);
   });
   restoreListRange();
-  $$('.nav').forEach(t => { t.onclick = () => showView(t.dataset.view); });
+  $$('.nav').forEach(t => { t.onclick = () => { showView(t.dataset.view); menu(false); }; });
   $('#logout').onclick = () => { ['auth', 'db', 'rep'].forEach(k => store.del(k)); location.reload(); };
+
+  // Телефонда: чап юқоридаги уч чизиқ — ён менюни очади/ёпади
+  $('#menuBtn').onclick = () => menu(!document.body.classList.contains('menu-open'));
+  $('#menuClose').onclick = () => menu(false);
+  $('#menuBg').onclick = () => menu(false);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') menu(false); });
 
   bindForm();
   bindList();
@@ -451,10 +462,16 @@ function startApp() {
   document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
 }
 
+function menu(open) {
+  document.body.classList.toggle('menu-open', !!open);
+}
+
 function showView(v) {
   S.view = v;
   $$('.view').forEach(s => s.classList.toggle('hidden', s.id !== 'v-' + v));
   $$('.nav').forEach(t => t.classList.toggle('on', t.dataset.view === v));
+  const cur = $(`.nav[data-view="${v}"] span`);
+  $('#topTitle').textContent = cur ? cur.textContent : 'Клиника';
   window.scrollTo(0, 0);
   refreshView();
   if (v === 'qarz') loadDebts(DB.debts !== null);
@@ -485,6 +502,7 @@ function svcRow(name, price, custom) {
   return `<div class="svc${custom ? ' custom on' : ''}">
     <label class="chk"><input type="checkbox" class="s-on"${custom ? ' checked' : ''}> ${nameHtml}</label>
     <input class="s-qty" type="number" min="1" value="1" title="Сони">
+    <i class="mul">×</i>
     <input class="s-price money" inputmode="numeric" value="${price ? money(price) : ''}" placeholder="Нарх">
     ${custom ? '<button type="button" class="x" title="Олиб ташлаш">×</button>' : '<span></span>'}
   </div>`;
@@ -802,7 +820,7 @@ function bindList() {
   };
   $('#lDept').onchange = () => { store.set('lDept', $('#lDept').value); loadList(); };
 
-  $('#lTable').addEventListener('click', e => {
+  $('#lBox').addEventListener('click', e => {
     const b = e.target.closest('button[data-act]');
     if (!b) return;
     const r = S.list.find(x => String(x['ID']) === b.dataset.id);
@@ -848,7 +866,7 @@ async function loadList(force) {
   // Фақат бугун — маҳаллий базадан
   if (r.from === tod && r.to === tod) {
     S.listKey = '';
-    if (!DB.date) { $('#lStats').innerHTML = ''; $('#lTable').innerHTML = empty('Юкланмоқда…'); return; }
+    if (!DB.date) { $('#lStats').innerHTML = ''; boxMsg('l', 'Юкланмоқда…'); return; }
     S.list = todayRows(key).slice().sort(byTimeDesc);
     renderList(d, S.list, false);
     setListUpd(null);
@@ -860,7 +878,7 @@ async function loadList(force) {
   const show = () => { const c = RG[ck]; S.list = mergeRange(c.rows, key, r.from, r.to); renderList(d, S.list, multi); setListUpd(c); };
   const had = !!RG[ck];
   if (had) show();
-  else { $('#lStats').innerHTML = ''; $('#lTable').innerHTML = empty('Юкланмоқда…'); }
+  else { $('#lStats').innerHTML = ''; boxMsg('l', 'Юкланмоқда…'); }
   if (had && RG[ck].ver === DB.ver && !force) return;
 
   const my = ++listReq;
@@ -873,7 +891,7 @@ async function loadList(force) {
   } catch (e) {
     if (S.listKey !== ck) return;
     if (RG[ck]) toast(e.message, true);
-    else $('#lTable').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`;
+    else boxMsg('l', e.message, true);
   }
 }
 
@@ -893,10 +911,47 @@ function renderList(d, rows, multi) {
     stat('Қарз', money(debt), debt > 0 ? 'warn' : '') +
     (rows.length - ok.length ? stat('Бекор қилинган', rows.length - ok.length) : '');
 
-  if (!rows.length) { $('#lTable').innerHTML = empty(multi ? 'Бу даврда ёзувлар йўқ' : 'Бу кунда ёзувлар йўқ'); return; }
+  if (!rows.length) {
+    const msg = multi ? 'Бу даврда ёзувлар йўқ' : 'Бу кунда ёзувлар йўқ';
+    boxMsg('l', msg);
+    return;
+  }
 
   const closeField = d && d.key === 'oper' ? 'Чиққан сана' : null;
   const ex = d ? d.extra.map(x => x.h) : [];
+  const actsOf = r => {
+    const off = r['Ҳолат'] === 'Бекор', id = esc(r['ID']);
+    return `<button class="btn sm" data-act="print" data-id="${id}">Чек</button>` +
+      (!off && closeField && !r[closeField] ? `<button class="btn sm" data-act="close" data-field="${esc(closeField)}" data-id="${id}">Чиқди</button>` : '') +
+      (!off && !r._pend ? `<button class="btn sm danger" data-act="cancel" data-id="${id}">Бекор</button>` : '');
+  };
+  const badgeOf = r => {
+    const off = r['Ҳолат'] === 'Бекор', dbt = Number(r['Қарз']) || 0;
+    return `<span class="badge${off ? ' off' : (dbt > 0 ? ' warn' : '')}">${off ? 'Бекор' : (dbt > 0 ? 'Қарз' : 'Тўланган')}</span>` +
+      (r._pend ? ' <span class="saving">юборилмоқда…</span>' : '');
+  };
+
+  // Телефон учун карточкалар (жадвал ўрнига)
+  $('#lCards').innerHTML = rows.map(r => {
+    const off = r['Ҳолат'] === 'Бекор';
+    const dbt = Number(r['Қарз']) || 0;
+    const meta = [multi ? showDate(r['Сана']) : '', r['Вақт'], d ? '' : r['Бўлим'], r['Телефон']].filter(Boolean).map(esc).join(' · ');
+    const extra = ex.map(h => { const x = d.extra.find(e => e.h === h); const v = x.t === 'date' ? showDate(r[h]) : r[h]; return v ? `${esc(h)}: ${esc(v)}` : ''; }).filter(Boolean).join(' · ');
+    const who = [r['Доктор'] ? 'Доктор: ' + r['Доктор'] : '', r['Юборган доктор'] ? 'Юборган: ' + r['Юборган доктор'] : ''].filter(Boolean).map(esc).join(' · ');
+    return `<div class="vc${off ? ' cancelled' : ''}">
+      <b class="qno">${esc(r['Навбат №'])}</b>
+      <div class="vc-m">
+        <div class="vc-name">${esc(r['Ф.И.Ш'])}${r['Туғилган йил'] ? ` <small class="muted">${esc(r['Туғилган йил'])}</small>` : ''}</div>
+        <div class="vc-sub">${meta}</div>
+        ${r['Хизматлар'] ? `<div class="vc-sub ink">${esc(r['Хизматлар'])}</div>` : ''}
+        ${who ? `<div class="vc-sub">${who}</div>` : ''}
+        ${extra ? `<div class="vc-sub">${extra}</div>` : ''}
+      </div>
+      <div class="vc-r"><b class="am">${money(r['Сумма'])}</b>
+        ${dbt > 0 ? `<span class="neg">қарз ${money(dbt)}</span>` : `<span class="muted">${esc(r['Тўлов тури'])}</span>`}</div>
+      <div class="vc-foot">${badgeOf(r)}<div class="act">${actsOf(r)}</div></div>
+    </div>`;
+  }).join('');
 
   const head = `<tr>${multi ? '<th>Сана</th>' : ''}<th>№</th><th>Вақт</th>${d ? '' : '<th>Бўлим</th>'}<th>Ф.И.Ш</th><th>Йил</th><th>Телефон</th><th>Хизматлар</th>
     <th class="r">Сумма</th><th class="r">Тўланди</th><th class="r">Қарз</th><th>Тўлов</th><th>Доктор</th><th>Юборган</th>
@@ -904,11 +959,7 @@ function renderList(d, rows, multi) {
 
   const body = rows.map(r => {
     const off = r['Ҳолат'] === 'Бекор';
-    const id = esc(r['ID']);
     const dbt = Number(r['Қарз']) || 0;
-    const acts = `<button class="btn sm" data-act="print" data-id="${id}">Чек</button>` +
-      (!off && closeField && !r[closeField] ? `<button class="btn sm" data-act="close" data-field="${esc(closeField)}" data-id="${id}">Чиқди</button>` : '') +
-      (!off && !r._pend ? `<button class="btn sm danger" data-act="cancel" data-id="${id}">Бекор</button>` : '');
     return `<tr class="${off ? 'cancelled' : ''}">
       ${multi ? `<td>${showDate(r['Сана'])}</td>` : ''}
       <td><b class="qno">${esc(r['Навбат №'])}</b></td><td>${esc(r['Вақт'])}</td>${d ? '' : `<td>${esc(r['Бўлим'])}</td>`}
@@ -917,8 +968,8 @@ function renderList(d, rows, multi) {
       <td class="r">${money(paidOf(r))}</td><td class="r ${dbt > 0 ? 'neg' : ''}">${dbt > 0 ? money(dbt) : '—'}</td>
       <td>${esc(r['Тўлов тури'])}</td><td>${esc(r['Доктор'])}</td><td>${esc(r['Юборган доктор'])}</td>
       ${ex.map(h => { const x = d.extra.find(e => e.h === h); return `<td>${esc(x.t === 'date' ? showDate(r[h]) : r[h])}</td>`; }).join('')}
-      <td><span class="badge${off ? ' off' : (dbt > 0 ? ' warn' : '')}">${off ? 'Бекор' : (dbt > 0 ? 'Қарз' : 'Тўланган')}</span>${r._pend ? ' <span class="saving">юборилмоқда…</span>' : ''}</td>
-      <td><div class="act">${acts}</div></td></tr>`;
+      <td>${badgeOf(r)}</td>
+      <td><div class="act">${actsOf(r)}</div></td></tr>`;
   }).join('');
 
   $('#lTable').innerHTML = head + body;
@@ -1430,7 +1481,7 @@ async function onSheetSubmit(e) {
 function bindQarz() {
   $('#dLoad').onclick = () => loadDebts();
   $('#dSearch').addEventListener('input', renderDebts);
-  $('#dTable').addEventListener('click', e => {
+  $('#dBox').addEventListener('click', e => {
     const b = e.target.closest('button[data-i]');
     if (b) openDebtPay(S.debtView[Number(b.dataset.i)]);
   });
@@ -1438,7 +1489,7 @@ function bindQarz() {
 
 async function loadDebts(quiet) {
   if (DB.debts) renderDebts();
-  else if (!quiet) { $('#dTable').innerHTML = empty('Юкланмоқда…'); $('#dStats').innerHTML = ''; }
+  else if (!quiet) { boxMsg('d', 'Юкланмоқда…'); $('#dStats').innerHTML = ''; }
   // Маълумот версияси ўзгармаган бўлса — сервердан қайта сўрамаймиз
   if (DB.debts && DB.debtsVer && DB.debtsVer === DB.ver) return;
   try {
@@ -1452,7 +1503,7 @@ async function loadDebts(quiet) {
     if (e.auth) return relogin(e.message);
     if (quiet) return;
     if (DB.debts) toast(e.message, true);
-    else $('#dTable').innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`;
+    else boxMsg('d', e.message, true);
   }
 }
 
@@ -1467,7 +1518,7 @@ function renderDebts() {
   $('#dStats').innerHTML = stat('Жами қарз', money(total), total > 0 ? 'warn main' : 'main', 'сўм') +
     stat('Ёзувлар', rows.length) + stat('Қарздорлар', people);
 
-  if (!rows.length) { $('#dTable').innerHTML = empty(q ? 'Топилмади' : 'Қарздорлар йўқ'); return; }
+  if (!rows.length) { boxMsg('d', q ? 'Топилмади' : 'Қарздорлар йўқ'); return; }
   $('#dTable').innerHTML = `<tr><th>Сана</th><th>Бўлим</th><th>Ф.И.Ш</th><th>Телефон</th><th>Хизматлар</th>
     <th class="r">Сумма</th><th class="r">Тўланган</th><th class="r">Қарз</th><th></th></tr>` +
     rows.map((r, i) => `<tr>
@@ -1476,6 +1527,18 @@ function renderDebts() {
       <td>${esc(r.phone)}</td><td class="wrap">${esc(r.items)}</td>
       <td class="r">${money(r.sum)}</td><td class="r">${money(r.paid)}</td><td class="r neg"><b>${money(r.debt)}</b></td>
       <td><div class="act"><button class="btn sm primary" data-i="${i}">Тўлаш</button></div></td></tr>`).join('');
+
+  // Телефон учун карточкалар
+  $('#dCards').innerHTML = rows.map((r, i) => `<div class="vc">
+      <div class="vc-m">
+        <div class="vc-name">${esc(r.fio)}${r.year ? ` <small class="muted">${esc(r.year)}</small>` : ''}</div>
+        <div class="vc-sub">${[showDate(r.date), r.deptName, r.phone].filter(Boolean).map(esc).join(' · ')}</div>
+        ${r.items ? `<div class="vc-sub ink">${esc(r.items)}</div>` : ''}
+        <div class="vc-sub">Сумма ${money(r.sum)} · Тўланган ${money(r.paid)}</div>
+      </div>
+      <div class="vc-r"><b class="am neg">${money(r.debt)}</b><span class="muted">қарз</span></div>
+      <div class="vc-foot"><span></span><div class="act"><button class="btn sm primary" data-i="${i}">Тўлаш</button></div></div>
+    </div>`).join('');
 }
 
 function openDebtPay(r) {
@@ -1668,7 +1731,16 @@ function renderReport(r) {
 
     <div class="card flush">
       <h3 class="in">Бўлимлар</h3>
-      <div class="table-wrap"><table>
+      <div class="rows m-only">
+        ${(depts.length ? depts : r.depts).map(d => `<div class="row">
+          <div class="row-top"><b>${esc(d.name)}</b><b class="am">${money(d.sum)}</b></div>
+          <div class="track"><div class="fill" style="width:${(d.sum / maxDept * 100).toFixed(1)}%"></div></div>
+          <div class="row-sub">${d.count} қабул · касса ${money(d.cash)}${d.debt > 0 ? ` · <span class="neg">қарз ${money(d.debt)}</span>` : ''} · улуш ${money(d.share)}</div>
+        </div>`).join('')}
+        <div class="row total"><div class="row-top"><b>Жами · ${b.count} қабул</b><b class="am">${money(b.total)}</b></div>
+          <div class="row-sub">касса ${money(c.total)} · қарз ${money(b.debt)} · докторлар ${money(b.share)} · клиника ${money(b.total - b.share)}</div></div>
+      </div>
+      <div class="table-wrap d-only"><table>
         <tr><th>Бўлим</th><th class="r">Қабул</th><th class="r">Хизматлар</th><th class="bar-cell"></th><th class="r">Касса тушуми</th><th class="r">Қарз</th><th class="r">Доктор улуши</th><th class="r">Клиника улуши</th></tr>
         ${(depts.length ? depts : r.depts).map(d => `<tr><td class="strong">${esc(d.name)}</td><td class="r">${d.count}</td>
           <td class="r">${money(d.sum)}</td><td class="bar-cell"><div class="track"><div class="fill" style="width:${(d.sum / maxDept * 100).toFixed(1)}%"></div></div></td>
@@ -1680,12 +1752,22 @@ function renderReport(r) {
     </div>
 
     <div class="two">
-      <div class="card flush"><h3 class="in">Докторлар</h3><div class="table-wrap"><table>${r.doctors.length
+      <div class="card flush"><h3 class="in">Докторлар</h3>
+        <div class="rows m-only">${r.doctors.length
+          ? r.doctors.map(d => `<div class="row"><div class="row-top"><b>${esc(d.name)}</b><b class="am">${money(d.share)}</b></div>
+              <div class="row-sub">${esc(d.dept)} · ${d.count} қабул · сумма ${money(d.sum)} · <span class="ink">улуши</span></div></div>`).join('')
+          : '<p class="blank-line">Маълумот йўқ</p>'}</div>
+        <div class="table-wrap d-only"><table>${r.doctors.length
         ? '<tr><th>Доктор</th><th>Бўлим</th><th class="r">Қабул</th><th class="r">Сумма</th><th class="r">Улуши</th></tr>' +
           r.doctors.map(d => `<tr><td class="strong">${esc(d.name)}</td><td>${esc(d.dept)}</td><td class="r">${d.count}</td>
             <td class="r">${money(d.sum)}</td><td class="r"><b>${money(d.share)}</b></td></tr>`).join('')
         : empty('Маълумот йўқ')}</table></div></div>
-      <div class="card flush"><h3 class="in">Юборган докторлар</h3><div class="table-wrap"><table>${r.referrers.length
+      <div class="card flush"><h3 class="in">Юборган докторлар</h3>
+        <div class="rows m-only">${r.referrers.length
+          ? r.referrers.map(d => `<div class="row"><div class="row-top"><b>${esc(d.name)}</b><b class="am">${money(d.sum)}</b></div>
+              <div class="row-sub">${d.count} бемор</div></div>`).join('')
+          : '<p class="blank-line">Маълумот йўқ</p>'}</div>
+        <div class="table-wrap d-only"><table>${r.referrers.length
         ? '<tr><th>Юборган доктор</th><th class="r">Бемор</th><th class="r">Сумма</th></tr>' +
           r.referrers.map(d => `<tr><td class="strong">${esc(d.name)}</td><td class="r">${d.count}</td><td class="r">${money(d.sum)}</td></tr>`).join('')
         : empty('Маълумот йўқ')}</table></div></div>
