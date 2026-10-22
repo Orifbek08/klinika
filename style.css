@@ -459,13 +459,32 @@ body.syncing #syncbar { opacity: 1; }
 }
 
 /* ---------- Чоп этиш ---------- */
-#receipt { display: none; }
+/* Чек: экранда кўринмайди, лекин ўлчанади (баландлиги принтер учун ҳисобланади) */
+#receipt { position: fixed; left: -300mm; top: 0; opacity: 0; pointer-events: none; z-index: -1; background: #fff; }
+.rc { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; font-size: 13px; color: #000; background: #fff; padding: 2mm 4mm 5mm; line-height: 1.35; }
+.rc .c { text-align: center; }
+.rc .b { font-weight: 700; }
+.rc .big { font-size: 18px; line-height: 1.2; }
+.rc .q { font-size: 58px; font-weight: 800; line-height: 1; letter-spacing: -.02em; padding: 3px 0 5px; }
+.rc .rc-dept { font-size: 16px; font-weight: 700; text-transform: uppercase; letter-spacing: .02em; }
+.rc .rc-line { border-top: 1px dashed #000; margin: 6px 0; }
+.rc .rc-line.solid { border-top: 2px solid #000; }
+.rc table { width: 100%; font-size: 13px; border-collapse: collapse; }
+.rc th, .rc td { padding: 2px 0; border: 0; white-space: normal; background: none; vertical-align: top; text-align: left; color: #000; text-transform: none; letter-spacing: 0; font-size: inherit; }
+.rc td.r { text-align: right; white-space: nowrap; padding-left: 8px; font-variant-numeric: tabular-nums; }
+.rc tr.rc-tot td { font-size: 16px; font-weight: 800; padding-top: 4px; }
+.rc tr.rc-due td { font-size: 15px; font-weight: 800; }
+.rc .rc-kv { display: flex; justify-content: space-between; gap: 8px; }
+.rc .rc-kv span:last-child { text-align: right; white-space: nowrap; }
+.rc .small { font-size: 11px; }
+.rc .rc-warn { font-size: 15px; font-weight: 800; padding: 4px 0; }
 @media print {
   body { background: #fff; }
   #login, #toast, #overlay, #syncbar { display: none !important; }
 
   body[data-print="receipt"] #app { display: none !important; }
-  body[data-print="receipt"] #receipt { display: block; }
+  body[data-print="receipt"] #receipt { position: static; opacity: 1; z-index: auto; }
+  body[data-print="receipt"] #receipt .rc { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
   body[data-print="report"] .side, body[data-print="report"] .no-print { display: none !important; }
   body[data-print="report"] .shell { display: block; }
@@ -475,14 +494,4 @@ body.syncing #syncbar { opacity: 1; }
   body[data-print="report"] .stats { grid-template-columns: repeat(3, 1fr); }
   body[data-print="report"] th, body[data-print="report"] td { padding: 6px 8px; font-size: 12px; }
 
-  .rc { font-family: "Courier New", monospace; font-size: 12px; color: #000; padding: 3mm; line-height: 1.3; }
-  .rc .c { text-align: center; }
-  .rc .b { font-weight: 700; }
-  .rc .big { font-size: 15px; }
-  .rc .q { font-size: 40px; font-weight: 700; line-height: 1.1; }
-  .rc .line { border-top: 1px dashed #000; margin: 5px 0; }
-  .rc table { width: 100%; font-size: 12px; }
-  .rc th, .rc td { padding: 1px 0; border: 0; white-space: normal; background: none; }
-  .rc td.r { text-align: right; white-space: nowrap; }
-  .rc .small { font-size: 11px; }
 }

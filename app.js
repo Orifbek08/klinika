@@ -1789,11 +1789,19 @@ function renderReport(r) {
 
 
 /* ================= ЧЕКЛАР ================= */
+// Чек эни: Созламалар → «Чек эни (мм)», одатда 80 (термопринтер). Босиладиган жой 72 мм (4 мм ҳошия).
+const rcWidth = () => (S.cfg && S.cfg.receiptWidth) || 80;
+
 function doPrint(mode) {
-  const w = (S.cfg && S.cfg.receiptWidth) || 80;
-  $('#pageStyle').textContent = mode === 'report'
-    ? '@page { size: A4; margin: 12mm; }'
-    : '@page { size: ' + w + 'mm auto; margin: 0; }';
+  if (mode === 'report') {
+    $('#pageStyle').textContent = '@page { size: A4; margin: 12mm; }';
+  } else {
+    // Саҳифа баландлиги чекнинг ўзига қараб ҳисобланади — принтер қоғозни ортиқча чиқармай, чекдан кейин кесади
+    const el = $('#receipt .rc');
+    const px = el ? el.getBoundingClientRect().height : 0;
+    const h = Math.max(60, Math.ceil(px * 25.4 / 96) + 4);
+    $('#pageStyle').textContent = '@page { size: ' + rcWidth() + 'mm ' + h + 'mm; margin: 0; }';
+  }
   document.body.dataset.print = mode;
   setTimeout(() => window.print(), 80);
 }
@@ -1801,14 +1809,14 @@ function doPrint(mode) {
 
 function rcWrap(inner) {
   const c = S.cfg;
-  $('#receipt').innerHTML = `<div class="rc" style="width:${c.receiptWidth || 80}mm">
+  $('#receipt').innerHTML = `<div class="rc" style="width:${rcWidth()}mm">
     <div class="c b big">${esc(c.clinic)}</div>
-    ${c.address ? `<div class="c">${esc(c.address)}</div>` : ''}
-    ${c.phone ? `<div class="c">${esc(c.phone)}</div>` : ''}
-    <div class="line"></div>${inner}
-    <div class="line"></div>
+    ${c.address ? `<div class="c small">${esc(c.address)}</div>` : ''}
+    ${c.phone ? `<div class="c small">Тел: ${esc(c.phone)}</div>` : ''}
+    <div class="rc-line"></div>${inner}
+    <div class="rc-line"></div>
     <div class="c small">Оператор: ${esc(S.user.name)}</div>
-    <div class="c small">Саломат бўлинг!</div>
+    <div class="c b">Саломат бўлинг!</div>
   </div>`;
   doPrint('receipt');
 }
@@ -1816,43 +1824,44 @@ function rcWrap(inner) {
 
 function printVisit(r, deptName) {
   const items = Array.isArray(r.items) && r.items.length
-    ? r.items.map(i => `<tr><td>${esc(i.name)}${Number(i.qty) > 1 ? ' ×' + i.qty : ''}</td>
+    ? r.items.map(i => `<tr><td>${esc(i.name)}${Number(i.qty) > 1 ? ` <span class="small">× ${i.qty} (${money(i.price)})</span>` : ''}</td>
         <td class="r">${money((Number(i.price) || 0) * (Number(i.qty) || 1))}</td></tr>`).join('')
     : `<tr><td colspan="2">${esc(r['Хизматлар'])}</td></tr>`;
   const debt = Number(r['Қарз']) || 0;
   rcWrap(`
-    <div class="c b">${esc(r.dept || deptName)}</div>
-    <div class="c">НАВБАТ №</div>
+    <div class="c rc-dept">${esc(r.dept || deptName)}</div>
+    <div class="c small">НАВБАТ РАҚАМИ</div>
     <div class="c q">${esc(r['Навбат №'])}</div>
-    <div class="line"></div>
-    <div>Сана: ${esc(showDate(r['Сана']))} ${esc(r['Вақт'])}</div>
-    <div>Бемор: ${esc(r['Ф.И.Ш'])}</div>
-    ${r['Доктор'] ? `<div>Доктор: ${esc(r['Доктор'])}</div>` : ''}
-    <div class="line"></div>
+    <div class="rc-line solid"></div>
+    <div class="rc-kv"><span>Сана:</span><span>${esc(showDate(r['Сана']))} ${esc(r['Вақт'])}</span></div>
+    <div class="rc-kv"><span>Бемор:</span><span class="b">${esc(r['Ф.И.Ш'])}</span></div>
+    ${r['Туғилган йил'] ? `<div class="rc-kv"><span>Туғилган йил:</span><span>${esc(r['Туғилган йил'])}</span></div>` : ''}
+    ${r['Доктор'] ? `<div class="rc-kv"><span>Доктор:</span><span>${esc(r['Доктор'])}</span></div>` : ''}
+    <div class="rc-line"></div>
     <table>${items}</table>
-    <div class="line"></div>
+    <div class="rc-line"></div>
     <table>
-      <tr class="b"><td>ЖАМИ:</td><td class="r">${money(r['Сумма'])} сўм</td></tr>
-      <tr><td>Тўланди${r['Тўлов тури'] ? ' (' + esc(r['Тўлов тури']) + ')' : ''}:</td><td class="r">${money(paidOf(r))}</td></tr>
-      ${debt > 0 ? `<tr class="b"><td>ҚАРЗ:</td><td class="r">${money(debt)} сўм</td></tr>` : ''}
+      <tr class="rc-tot"><td>ЖАМИ:</td><td class="r">${money(r['Сумма'])} сўм</td></tr>
+      <tr><td>Тўланди${r['Тўлов тури'] ? ' (' + esc(r['Тўлов тури']) + ')' : ''}:</td><td class="r">${money(paidOf(r))} сўм</td></tr>
+      ${debt > 0 ? `<tr class="rc-due"><td>ҚАРЗ:</td><td class="r">${money(debt)} сўм</td></tr>` : ''}
     </table>
-    ${r['Ҳолат'] === 'Бекор' ? '<div class="c b">*** БЕКОР ҚИЛИНГАН ***</div>' : ''}`);
+    ${r['Ҳолат'] === 'Бекор' ? '<div class="rc-line"></div><div class="c rc-warn">*** БЕКОР ҚИЛИНГАН ***</div>' : ''}`);
 }
 
 
 function printPay(p) {
   rcWrap(`
-    <div class="c b">${esc(p.title)}</div>
-    <div class="c">${esc(p.dept)}</div>
-    <div class="line"></div>
-    <div>Сана: ${showDate(today())} ${nowTime()}</div>
-    <div>Бемор: ${esc(p.fio)}</div>
-    <div class="line"></div>
+    <div class="c rc-dept">${esc(p.title)}</div>
+    <div class="c small">${esc(p.dept)}</div>
+    <div class="rc-line solid"></div>
+    <div class="rc-kv"><span>Сана:</span><span>${showDate(today())} ${nowTime()}</span></div>
+    <div class="rc-kv"><span>Бемор:</span><span class="b">${esc(p.fio)}</span></div>
+    <div class="rc-line"></div>
     <table>
-      <tr class="b"><td>ТЎЛАНДИ:</td><td class="r">${money(p.amount)} сўм</td></tr>
+      <tr class="rc-tot"><td>ТЎЛАНДИ:</td><td class="r">${money(p.amount)} сўм</td></tr>
       <tr><td>Тўлов тури:</td><td class="r">${esc(p.payment)}</td></tr>
     </table>
-    ${p.note ? `<div class="line"></div><div>${esc(p.note)}</div>` : ''}`);
+    ${p.note ? `<div class="rc-line"></div><div>${esc(p.note)}</div>` : ''}`);
 }
 
 
@@ -1865,24 +1874,24 @@ function printStay(v) {
     byDay[d].map(x => `<tr><td>${esc(x['Хизмат'])}${Number(x['Сони']) > 1 ? ' ×' + esc(x['Сони']) : ''}</td><td class="r">${money(x['Сумма'])}</td></tr>`).join('')).join('');
   const bal = c.balance;
   rcWrap(`
-    <div class="c b">ЁТОҚХОНА — ҲИСОБ</div>
-    <div class="c">№ ${esc(s['Навбат №'])}</div>
-    <div class="line"></div>
-    <div>Бемор: ${esc(s['Ф.И.Ш'])}</div>
-    ${s['Ётоқ тури'] ? `<div>Хона: ${esc(s['Ётоқ тури'])}</div>` : ''}
-    <div>Келди: ${showDate(s['Келган сана'])} ${esc(s['Келган соат'] || '')}</div>
-    <div>${s['Кетган сана'] ? 'Кетди: ' + showDate(s['Кетган сана']) : 'Ҳисоб санаси: ' + showDate(today())}</div>
-    <div class="line"></div>
+    <div class="c rc-dept">Ётоқхона — ҳисоб</div>
+    <div class="c small">№ ${esc(s['Навбат №'])}</div>
+    <div class="rc-line solid"></div>
+    <div class="rc-kv"><span>Бемор:</span><span class="b">${esc(s['Ф.И.Ш'])}</span></div>
+    ${s['Ётоқ тури'] ? `<div class="rc-kv"><span>Хона:</span><span>${esc(s['Ётоқ тури'])}</span></div>` : ''}
+    <div class="rc-kv"><span>Келди:</span><span>${showDate(s['Келган сана'])} ${esc(s['Келган соат'] || '')}</span></div>
+    <div class="rc-kv"><span>${s['Кетган сана'] ? 'Кетди:' : 'Ҳисоб санаси:'}</span><span>${showDate(s['Кетган сана'] || today())}</span></div>
+    <div class="rc-line"></div>
     <table>
       <tr><td>Ётоқ: ${c.days} кун × ${money(c.rate)}</td><td class="r">${money(c.bed)}</td></tr>
       ${lines}
     </table>
-    <div class="line"></div>
+    <div class="rc-line"></div>
     <table>
-      <tr class="b"><td>ЖАМИ:</td><td class="r">${money(c.total)} сўм</td></tr>
-      <tr><td>Тўланган:</td><td class="r">${money(c.paid)}</td></tr>
-      ${bal > 0 ? `<tr class="b"><td>${c.active ? 'ҚОЛДИҚ' : 'ҚАРЗ'}:</td><td class="r">${money(bal)} сўм</td></tr>` : ''}
-      ${bal < 0 ? `<tr class="b"><td>ОРТИҚЧА:</td><td class="r">${money(-bal)} сўм</td></tr>` : ''}
+      <tr class="rc-tot"><td>ЖАМИ:</td><td class="r">${money(c.total)} сўм</td></tr>
+      <tr><td>Тўланган:</td><td class="r">${money(c.paid)} сўм</td></tr>
+      ${bal > 0 ? `<tr class="rc-due"><td>${c.active ? 'ҚОЛДИҚ' : 'ҚАРЗ'}:</td><td class="r">${money(bal)} сўм</td></tr>` : ''}
+      ${bal < 0 ? `<tr class="rc-due"><td>ОРТИҚЧА:</td><td class="r">${money(-bal)} сўм</td></tr>` : ''}
     </table>`);
 }
 
