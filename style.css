@@ -461,7 +461,7 @@ body.syncing #syncbar { opacity: 1; }
 /* ---------- Чоп этиш ---------- */
 /* Чек: экранда кўринмайди, лекин ўлчанади (баландлиги принтер учун ҳисобланади) */
 #receipt { position: fixed; left: -300mm; top: 0; opacity: 0; pointer-events: none; z-index: -1; background: #fff; }
-.rc { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; font-size: 13px; color: #000; background: #fff; padding: 2mm 4mm 5mm; line-height: 1.35; }
+.rc { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; font-size: 13px; color: #000; background: #fff; padding: 1mm 3mm 4mm; line-height: 1.35; width: 80mm; }
 .rc .c { text-align: center; }
 .rc .b { font-weight: 700; }
 .rc .big { font-size: 18px; line-height: 1.2; }
@@ -475,7 +475,8 @@ body.syncing #syncbar { opacity: 1; }
 .rc tr.rc-tot td { font-size: 16px; font-weight: 800; padding-top: 4px; }
 .rc tr.rc-due td { font-size: 15px; font-weight: 800; }
 .rc .rc-kv { display: flex; justify-content: space-between; gap: 8px; }
-.rc .rc-kv span:last-child { text-align: right; white-space: nowrap; }
+.rc .rc-kv span:first-child { flex: none; }
+.rc .rc-kv span:last-child { text-align: right; min-width: 0; overflow-wrap: anywhere; }
 .rc .small { font-size: 11px; }
 .rc .rc-warn { font-size: 15px; font-weight: 800; padding: 4px 0; }
 @media print {
@@ -484,6 +485,7 @@ body.syncing #syncbar { opacity: 1; }
 
   body[data-print="receipt"] #app { display: none !important; }
   body[data-print="receipt"] #receipt { position: static; opacity: 1; z-index: auto; }
+  body[data-print="receipt"] #receipt .rc { width: auto; }   /* қоғоз энига мослашади */
   body[data-print="receipt"] #receipt .rc { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
   body[data-print="report"] .side, body[data-print="report"] .no-print { display: none !important; }

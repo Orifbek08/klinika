@@ -1789,19 +1789,15 @@ function renderReport(r) {
 
 
 /* ================= ЧЕКЛАР ================= */
-// Чек эни: Созламалар → «Чек эни (мм)», одатда 80 (термопринтер). Босиладиган жой 72 мм (4 мм ҳошия).
+// Чек эни: Созламалар → «Чек эни (мм)», одатда 80 (термопринтер).
 const rcWidth = () => (S.cfg && S.cfg.receiptWidth) || 80;
 
 function doPrint(mode) {
-  if (mode === 'report') {
-    $('#pageStyle').textContent = '@page { size: A4; margin: 12mm; }';
-  } else {
-    // Саҳифа баландлиги чекнинг ўзига қараб ҳисобланади — принтер қоғозни ортиқча чиқармай, чекдан кейин кесади
-    const el = $('#receipt .rc');
-    const px = el ? el.getBoundingClientRect().height : 0;
-    const h = Math.max(60, Math.ceil(px * 25.4 / 96) + 4);
-    $('#pageStyle').textContent = '@page { size: ' + rcWidth() + 'mm ' + h + 'mm; margin: 0; }';
-  }
+  // Чек учун саҳифа ўлчами берилмайди (size: auto) — принтер драйверида танланган қоғоз ишлатилади.
+  // Акс ҳолда Chrome чекни қоғоз ўртасига жойлаб, тепа-пастда бўш жой қолдиради.
+  $('#pageStyle').textContent = mode === 'report'
+    ? '@page { size: A4; margin: 12mm; }'
+    : '@page { size: auto; margin: 0; }';
   document.body.dataset.print = mode;
   setTimeout(() => window.print(), 80);
 }
@@ -1809,7 +1805,8 @@ function doPrint(mode) {
 
 function rcWrap(inner) {
   const c = S.cfg;
-  $('#receipt').innerHTML = `<div class="rc" style="width:${rcWidth()}mm">
+  // Эни қоғозга мослашади (72 мм форма бўлса ҳам сиғади), лекин белгиланган энидан ошмайди
+  $('#receipt').innerHTML = `<div class="rc" style="max-width:${rcWidth()}mm">
     <div class="c b big">${esc(c.clinic)}</div>
     ${c.address ? `<div class="c small">${esc(c.address)}</div>` : ''}
     ${c.phone ? `<div class="c small">Тел: ${esc(c.phone)}</div>` : ''}
